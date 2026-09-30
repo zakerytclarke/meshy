@@ -361,20 +361,15 @@ h2, h3, p { margin: 0; }
 .map-card p { color: var(--muted); font-size: 14px; }
 .heard-list { display: grid; gap: 4px; }
 .heard-list p { margin: 0; }
-.heard-list button {
+.heard-list div {
   display: grid;
   grid-template-columns: 44px 1fr auto;
   gap: 8px;
   align-items: center;
   width: 100%;
   padding: 6px;
-  border: 0;
   border-radius: 10px;
-  background: transparent;
-  text-align: left;
-  color: inherit;
 }
-.heard-list button:hover { background: var(--bg-elev); }
 .heard-list span { display: grid; min-width: 0; }
 .heard-list small { color: var(--muted); }
 .fix {

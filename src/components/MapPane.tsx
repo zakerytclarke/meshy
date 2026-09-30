@@ -223,21 +223,13 @@ export function MapPane({ active }: { active: boolean }) {
             Center on me
           </button>
         </div>
-        {square ? <CellCard square={square} onClose={() => setSelectedAt(null)} onMessage={(num) => mesh.messageNode(num)} /> : null}
+        {square ? <CellCard square={square} onClose={() => setSelectedAt(null)} /> : null}
       </div>
     </div>
   );
 }
 
-function CellCard({
-  square,
-  onClose,
-  onMessage,
-}: {
-  square: SquareInfo;
-  onClose: () => void;
-  onMessage: (num: number) => void;
-}) {
+function CellCard({ square, onClose }: { square: SquareInfo; onClose: () => void }) {
   return (
     <article className="map-card">
       <header>
@@ -247,11 +239,11 @@ function CellCard({
         </button>
       </header>
       <p>{square.across}</p>
-      {square.nodes.length === 0 ? <p>No nodes with a GPS fix here, and none heard from this square.</p> : null}
+      {square.nodes.length === 0 ? <p>No GPS node is in this square, and no message was heard from here.</p> : null}
       {square.nodes.length > 0 ? (
         <div className="heard-list">
           {square.nodes.map((node) => (
-            <button key={node.num} onClick={() => onMessage(node.num)}>
+            <div key={node.num}>
               <b>{node.mark}</b>
               <span>
                 {node.name}
@@ -261,7 +253,7 @@ function CellCard({
                 </small>
               </span>
               <i className={node.gps ? "fix gps" : "fix heard"}>{node.gps ? "GPS" : "Heard"}</i>
-            </button>
+            </div>
           ))}
         </div>
       ) : null}
