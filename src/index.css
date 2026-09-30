@@ -392,8 +392,17 @@ h2, h3, p { margin: 0; }
   border-radius: 50%;
 }
 .fix.gps { color: var(--accent); }
-.fix.gps::before { background: var(--accent); }
-.fix.heard::before { border: 1.5px dashed #b7c3bb; }
+.fix.gps::before {
+  width: 9px;
+  height: 9px;
+  border-radius: 50% 50% 50% 0;
+  background: var(--accent);
+  transform: rotate(-45deg);
+}
+.fix.heard::before {
+  border: 1.5px dashed #d6ff4a;
+  background: transparent;
+}
 .arrow-wrap { background: transparent; border: 0; }
 .arrow-head {
   display: block;
@@ -405,8 +414,12 @@ h2, h3, p { margin: 0; }
   border-bottom: 10px solid #d6ff4a;
   filter: drop-shadow(0 0 2px rgba(0, 0, 0, 0.4));
 }
-.leaflet-overlay-pane .link-flow { animation: link-flow 0.9s linear infinite; }
-@keyframes link-flow { to { stroke-dashoffset: -22; } }
+.leaflet-links-pane path.link-flow {
+  stroke-linecap: round;
+  stroke-dasharray: 1.5 12 !important;
+  animation: link-flow 0.9s linear infinite;
+}
+@keyframes link-flow { to { stroke-dashoffset: -27; } }
 .node-sheet {
   top: 100px;
   right: 12px;

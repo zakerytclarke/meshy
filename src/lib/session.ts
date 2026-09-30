@@ -652,20 +652,19 @@ export class RadioSession {
     text?: string,
   ): void {
     const points: { lat: number; lng: number; heard?: number[]; event?: { time: number; num: number; hops: number | null; label: string; text?: string } }[] = [];
-    let unlocated: number | null = null;
     if (remote != null) {
       const point = this.pointFor(remote);
       if (point) points.push(point);
-      else unlocated = remote;
     }
     if (includeSelf) {
       const self = this.selfPoint();
       if (self) {
         const event =
-          remote != null && (text || label === "Text")
+          remote != null && remote !== this.hooks.getMyNum() && (text || label === "Text")
             ? { time: Date.now(), num: remote, hops, label, text: text ? clip(text) : undefined }
             : undefined;
-        points.push(unlocated != null ? { ...self, heard: [unlocated], event } : { ...self, event });
+        const heard = remote != null && remote !== this.hooks.getMyNum() ? [remote] : undefined;
+        points.push({ ...self, heard, event });
       }
     }
     if (points.length === 0) return;

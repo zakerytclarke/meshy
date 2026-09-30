@@ -20,6 +20,7 @@ export function MapPane({ active }: { active: boolean }) {
   const placedOn = useRef<{ map: L.Map | null; radio: boolean; browser: boolean }>({ map: null, radio: false, browser: false });
   const [selectedAt, setSelectedAt] = useState<{ lat: number; lng: number } | null>(null);
   const [zoom, setZoom] = useState(3);
+  const [mapReady, setMapReady] = useState(false);
   cellsRef.current = mesh.cells;
   selectedRef.current = selectedAt;
 
@@ -51,10 +52,12 @@ export function MapPane({ active }: { active: boolean }) {
     });
     mapRef.current = map;
     gridRef.current = grid;
+    setMapReady(true);
     return () => {
       map.remove();
       mapRef.current = null;
       gridRef.current = null;
+      setMapReady(false);
     };
   }, []);
 
@@ -81,7 +84,7 @@ export function MapPane({ active }: { active: boolean }) {
 
   useEffect(() => {
     const map = mapRef.current;
-    if (!map || userMoved.current) return;
+    if (!map || !mapReady || userMoved.current) return;
     if (placedOn.current.map !== map) placedOn.current = { map, radio: false, browser: false };
     if (radioFix?.lat != null && radioFix.lng != null && !placedOn.current.radio) {
       placedOn.current.radio = true;
@@ -99,7 +102,7 @@ export function MapPane({ active }: { active: boolean }) {
       placedOn.current.browser = true;
       map.setView([browserFix.lat, browserFix.lng], 16);
     }
-  }, [radioFix, browserFix]);
+  }, [radioFix, browserFix, mapReady]);
 
   useEffect(() => {
     const map = mapRef.current;
@@ -151,15 +154,22 @@ export function MapPane({ active }: { active: boolean }) {
 
   useEffect(() => {
     const map = mapRef.current;
-    if (!map) return;
+    if (!map || !mapReady) return;
+    if (!map.getPane("links")) {
+      const pane = map.createPane("links");
+      pane.style.zIndex = "450";
+      pane.style.pointerEvents = "none";
+    }
     const group = L.layerGroup().addTo(map);
     const here = herePoint(mesh.nodes, mesh.myNodeNum, mesh.browserFix);
     for (const link of recentLinks(mesh.messages, mesh.nodes, mesh.myNodeNum, here)) {
       L.polyline([link.from, link.to], {
+        pane: "links",
         color: "#d6ff4a",
-        weight: 2.5,
-        opacity: 0.95,
-        dashArray: "1 10",
+        weight: 3,
+        opacity: 1,
+        dashArray: "1.5 12",
+        lineCap: "round",
         interactive: false,
         className: "link-flow",
       }).addTo(group);
@@ -167,6 +177,7 @@ export function MapPane({ active }: { active: boolean }) {
       L.marker(head, {
         interactive: false,
         keyboard: false,
+        pane: "links",
         icon: L.divIcon({
           className: "arrow-wrap",
           html: `<span class="arrow-head" style="transform:rotate(${bearing(link.from, link.to)}deg)"></span>`,
@@ -178,7 +189,7 @@ export function MapPane({ active }: { active: boolean }) {
     return () => {
       group.remove();
     };
-  }, [mesh.messages, mesh.nodes, mesh.myNodeNum, mesh.browserFix]);
+  }, [mesh.messages, mesh.nodes, mesh.myNodeNum, mesh.browserFix, mapReady]);
 
   function centerOnMe() {
     const map = mapRef.current;
@@ -245,7 +256,8 @@ function CellCard({
               <span>
                 {node.name}
                 <small>
-                  {hopCount(node.hops)} · {formatAgo(node.lastHeard)}
+                  {hopCount(node.hops, node.mine)}
+                  {node.lastHeard ? ` · ${formatAgo(node.lastHeard)}` : ""}
                 </small>
               </span>
               <i className={node.gps ? "fix gps" : "fix heard"}>{node.gps ? "GPS" : "Heard"}</i>
@@ -374,6 +386,7 @@ interface SquareNode {
   hops: number | null;
   lastHeard?: number;
   gps: boolean;
+  mine: boolean;
 }
 
 interface SquareInfo {
@@ -394,7 +407,7 @@ function describeSquare(
   const box = spanCorners(hit.x, hit.y, step);
   const listed = new Map<number, SquareNode>();
   for (const node of nodes) {
-    if (node.num === myNodeNum || node.lat == null || node.lng == null) continue;
+    if (node.lat == null || node.lng == null) continue;
     if (node.lat > box.north || node.lat < box.south || node.lng < box.west || node.lng > box.east) continue;
     listed.set(node.num, {
       num: node.num,
@@ -403,6 +416,7 @@ function describeSquare(
       hops: node.hopsAway ?? null,
       lastHeard: node.lastHeard,
       gps: true,
+      mine: node.num === myNodeNum,
     });
   }
   for (const cell of Object.values(cells)) {
@@ -423,6 +437,7 @@ function describeSquare(
         hops: node?.hopsAway ?? cell.hops,
         lastHeard: Math.max(time, node?.lastHeard ?? 0) || undefined,
         gps: false,
+        mine: false,
       });
     }
   }
@@ -471,7 +486,7 @@ function recentLinks(
   for (const pair of latest.values()) {
     const from = locate(pair.from, nodes, myNodeNum, here);
     const to = locate(pair.to, nodes, myNodeNum, here);
-    if (!from || !to) continue;
+    if (!from || !to || movedMeters(from, to) < 15) continue;
     links.push({ from, to });
   }
   return links;
