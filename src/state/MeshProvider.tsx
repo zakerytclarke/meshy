@@ -174,6 +174,7 @@ export function MeshProvider({ children }: { children: ReactNode }) {
   const stateRef = useRef(state);
   stateRef.current = state;
   const sessionRef = useRef<RadioSession | null>(null);
+  const paintTimer = useRef(0);
   if (!sessionRef.current) {
     sessionRef.current = new RadioSession({
       getNodes: () => stateRef.current.nodes,
@@ -214,7 +215,10 @@ export function MeshProvider({ children }: { children: ReactNode }) {
   function commit(recipe: (current: AppState) => AppState) {
     const next = recipe(stateRef.current);
     stateRef.current = next;
-    setState(next);
+    // The node download arrives as hundreds of separate Bluetooth events.
+    // Painting each one freezes the phone and the radio drops the link.
+    window.clearTimeout(paintTimer.current);
+    paintTimer.current = window.setTimeout(() => setState(stateRef.current), 80);
   }
 
   useEffect(() => {
@@ -266,21 +270,30 @@ export function MeshProvider({ children }: { children: ReactNode }) {
 
   const askedFix = useRef(false);
   useEffect(() => {
-    if (state.status !== "connected") {
+    if (state.status !== "connected" || !state.myNodeNum) {
       askedFix.current = false;
       return;
     }
-    if (!state.myNodeNum || askedFix.current) return;
-    askedFix.current = true;
-    try {
-      sessionRef.current?.requestPosition(state.myNodeNum);
-    } catch {
-      askedFix.current = false;
-    }
+    if (askedFix.current) return;
+    const timer = window.setTimeout(() => {
+      askedFix.current = true;
+      try {
+        sessionRef.current?.requestPosition(stateRef.current.myNodeNum);
+      } catch {
+        askedFix.current = false;
+      }
+    }, 2000);
+    return () => window.clearTimeout(timer);
   }, [state.status, state.myNodeNum]);
 
   useEffect(() => {
     void sessionRef.current?.restore();
+    const onVisible = () => {
+      if (document.visibilityState !== "visible") return;
+      void sessionRef.current?.resume();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => document.removeEventListener("visibilitychange", onVisible);
   }, []);
 
   useEffect(() => {

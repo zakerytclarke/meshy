@@ -1,6 +1,6 @@
 import { create, fromBinary } from "@bufbuild/protobuf";
 import { MeshDevice, Protobuf } from "@meshtastic/core";
-import { TransportWebBluetooth } from "@meshtastic/transport-web-bluetooth";
+import { asMeshTransport, RadioBluetooth } from "./ble";
 import {
   base64ToBytes,
   bytesToBase64,
@@ -65,8 +65,9 @@ export class RadioSession {
   private restoring = false;
   private userPaused = false;
   private attempt = 0;
-  private retryDelay = 1000;
+  private retryDelay = 2000;
   private retryTimer = 0;
+  private keepAlive = 0;
   private pickerPending = false;
   private handledFailures = new Set<number>();
 
@@ -142,7 +143,7 @@ export class RadioSession {
     this.hooks.onStatus("connecting", "Choose your radio");
     try {
       const device = await navigator.bluetooth.requestDevice({
-        filters: [{ services: [TransportWebBluetooth.ServiceUuid] }],
+        filters: [{ services: [RadioBluetooth.ServiceUuid] }],
       });
       this.remember(device);
       await this.open(device);
@@ -173,12 +174,19 @@ export class RadioSession {
     this.userPaused = false;
     this.hooks.onStatus("connecting", `Reconnecting to ${device.name || readSavedRadio()?.name || "radio"}`);
     try {
-      const transport = await TransportWebBluetooth.createFromDevice(device);
+      // Android keeps a dead GATT session after a drop. Close it and let the
+      // stack settle before opening the radio again.
+      if (device.gatt?.connected) {
+        device.gatt.disconnect();
+        await new Promise((resolve) => window.setTimeout(resolve, 600));
+        if (attempt !== this.attempt || this.userPaused) return;
+      }
+      const link = await RadioBluetooth.createFromDevice(device);
       if (attempt !== this.attempt || this.userPaused) {
-        transport.disconnect();
+        void link.disconnect();
         return;
       }
-      const mesh = new MeshDevice(transport);
+      const mesh = new MeshDevice(asMeshTransport(link));
       this.device = mesh;
       this.ble = device;
       this.bind(mesh);
@@ -349,7 +357,41 @@ export class RadioSession {
     );
   }
 
+  /** Reopen the radio after the phone froze or hid this page. */
+  async resume(): Promise<void> {
+    if (this.userPaused || this.connecting || this.restoring || this.pickerPending) return;
+    if (document.visibilityState === "hidden") return;
+    if (this.device && this.ble?.gatt?.connected) return;
+    if (!this.ble) {
+      await this.restore();
+      return;
+    }
+    const ble = this.ble;
+    const previous = this.device;
+    this.drop();
+    try {
+      await previous?.disconnect();
+    } catch {
+      /* The link is already gone. */
+    }
+    await this.open(ble);
+  }
+
+  private armKeepAlive(): void {
+    window.clearInterval(this.keepAlive);
+    const ping = () => {
+      if (!this.device) return;
+      void this.device.heartbeat().catch(() => {
+        /* A failed ping shows up as a disconnect and reconnects. */
+      });
+    };
+    window.setTimeout(ping, 4000);
+    this.keepAlive = window.setInterval(ping, 20000);
+  }
+
   private drop(): void {
+    window.clearInterval(this.keepAlive);
+    this.keepAlive = 0;
     for (const unsubscribe of this.unsubs) unsubscribe();
     this.unsubs = [];
     this.device = null;
@@ -363,7 +405,8 @@ export class RadioSession {
       return;
     }
     if (status === 7) {
-      this.retryDelay = 1000;
+      this.retryDelay = 2000;
+      this.armKeepAlive();
       this.hooks.onStatus("connected", "Radio live");
       return;
     }
@@ -461,10 +504,10 @@ export class RadioSession {
         altitude: packet.data.altitude,
       });
     }
-    const node = this.hooks.getNodes().find((item) => item.num === packet.from);
-    if (!point || node?.viaMqtt) return;
     const mesh = this.lastMesh && this.lastMesh.id === packet.id ? this.lastMesh : null;
-    if (mesh?.viaMqtt) return;
+    if (!point || !mesh || mesh.viaMqtt) return;
+    const node = this.hooks.getNodes().find((item) => item.num === packet.from);
+    if (node?.viaMqtt) return;
     this.markVisited([point]);
   }
 
