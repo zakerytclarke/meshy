@@ -41,10 +41,11 @@ export function blockCorners(x: number, y: number): { north: number; south: numb
   return spanCorners(x, y, 1);
 }
 
-/** How many city blocks merge into one drawn square. Zooming out doubles the square. */
+/** City blocks per drawn square. Merge a 10×10 group only after a 10× zoom-out. */
 export function displayStep(zoom: number): number {
-  const levels = Math.max(0, Math.floor(BLOCK_ZOOM - zoom));
-  return 2 ** Math.min(levels, 14);
+  const shrink = 2 ** Math.max(0, BLOCK_ZOOM - zoom);
+  const levels = Math.min(6, Math.floor(Math.log10(shrink)));
+  return 10 ** Math.max(0, levels);
 }
 
 export function displayOrigin(x: number, y: number, step: number): { x: number; y: number } {
