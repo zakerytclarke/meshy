@@ -24,7 +24,10 @@ export function App() {
           </button>
         ) : (
           <button className="status-pill" onClick={() => mesh.connect()} disabled={mesh.status === "configuring"}>
-            {mesh.status === "disconnected" ? "Connect radio" : mesh.statusDetail}
+            {mesh.status === "connecting" || mesh.status === "configuring" ? <i className="spin" /> : null}
+            <span>
+              {mesh.status === "disconnected" && !mesh.statusNote ? "Connect radio" : mesh.statusDetail}
+            </span>
           </button>
         )}
       </header>

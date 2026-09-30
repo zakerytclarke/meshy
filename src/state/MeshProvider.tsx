@@ -29,6 +29,7 @@ interface AppState {
   tab: TabId;
   status: ConnectionStatus;
   statusDetail: string;
+  statusNote: string;
   banner: Banner | null;
   busy: string | null;
   myNodeNum: number;
@@ -94,6 +95,7 @@ function loadState(): AppState {
     tab: "messages",
     status: "disconnected",
     statusDetail: "Not connected",
+    statusNote: "",
     banner: null,
     busy: null,
     myNodeNum: typeof meta.myNodeNum === "number" ? meta.myNodeNum : 0,
@@ -181,7 +183,16 @@ export function MeshProvider({ children }: { children: ReactNode }) {
       getChannels: () => stateRef.current.channels,
       getMyNum: () => stateRef.current.myNodeNum,
       getSelfPoint: () => selfPoint(stateRef.current),
-      onStatus: (status, detail) => commit((current) => ({ ...current, status, statusDetail: detail }), true),
+      onStatus: (status, detail, note) =>
+        commit(
+          (current) => ({
+            ...current,
+            status,
+            statusDetail: detail,
+            statusNote: status === "connected" ? "" : note !== undefined ? note : current.statusNote,
+          }),
+          true,
+        ),
       onBanner: (tone, text) => commit((current) => ({ ...current, banner: { tone, text }, busy: null })),
       onMyNode: (num) => commit((current) => ({ ...current, myNodeNum: num })),
       onNode: (patch) => commit((current) => ({ ...current, nodes: mergeNode(current.nodes, patch) })),

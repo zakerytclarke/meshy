@@ -32,6 +32,13 @@ export function Radio() {
         <div>
           <span className={`live ${mesh.status}`}>{statusLabel(mesh.status)}</span>
           <h3>{mesh.status === "connected" ? me?.longName || "Radio connected" : "Connect your radio"}</h3>
+          {mesh.status === "connecting" || mesh.status === "configuring" ? (
+            <p className="connect-step">
+              <i className="spin" />
+              {mesh.statusDetail}
+            </p>
+          ) : null}
+          {mesh.statusNote ? <p className="hint">{mesh.statusNote}</p> : null}
           <p>
             {mesh.bluetoothAvailable
               ? mesh.radioName
@@ -47,11 +54,15 @@ export function Radio() {
         ) : (
           <div className="row-actions">
             <button className="primary large" onClick={() => mesh.connect()} disabled={mesh.status === "configuring" || !mesh.bluetoothAvailable}>
-              {mesh.status === "connecting" || mesh.status === "configuring"
-                ? mesh.statusDetail
-                : mesh.radioName
-                  ? `Reconnect ${mesh.radioName}`
-                  : "Connect radio"}
+              {mesh.status === "connecting" || mesh.status === "configuring" ? (
+                <>
+                  <i className="spin dark" /> Connecting
+                </>
+              ) : mesh.radioName ? (
+                `Reconnect ${mesh.radioName}`
+              ) : (
+                "Connect radio"
+              )}
             </button>
             {mesh.radioName ? (
               <button className="ghost" onClick={() => mesh.connect(true)} disabled={mesh.status === "connecting" || mesh.status === "configuring"}>

@@ -59,6 +59,27 @@ h2, h3, p { margin: 0; }
   border: 1px solid var(--line);
   padding: 8px 12px;
 }
+.status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  max-width: min(70vw, 280px);
+  text-align: left;
+  line-height: 1.25;
+}
+.status-pill span { white-space: normal; }
+.spin {
+  width: 14px;
+  height: 14px;
+  flex: none;
+  border: 2px solid rgba(255, 255, 255, 0.28);
+  border-top-color: currentColor;
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+}
+.spin.dark { border-color: rgba(16, 20, 16, 0.28); border-top-color: currentColor; }
+.connect-step { display: flex; align-items: center; gap: 8px; }
+@keyframes spin { to { transform: rotate(360deg); } }
 .status-pill.live { color: var(--accent); }
 .primary {
   background: var(--accent);
@@ -66,7 +87,14 @@ h2, h3, p { margin: 0; }
   padding: 10px 14px;
   font-weight: 650;
 }
-.primary.large { min-width: 180px; padding: 14px 18px; }
+.primary.large {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-width: 180px;
+  padding: 14px 18px;
+}
 .primary:disabled, .ghost:disabled, .status-pill:disabled { opacity: 0.45; cursor: not-allowed; }
 .danger { color: var(--red); }
 .text-button { background: transparent; color: var(--accent); padding: 4px 0; }

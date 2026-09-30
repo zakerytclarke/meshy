@@ -27,7 +27,7 @@ export interface SessionHooks {
   getMyNum: () => number;
   /** Where this radio is. Browser location is the fallback when the radio has no GPS fix. */
   getSelfPoint: () => { lat: number; lng: number } | null;
-  onStatus: (status: ConnectionStatus, detail: string) => void;
+  onStatus: (status: ConnectionStatus, detail: string, note?: string) => void;
   onBanner: (tone: "error" | "ok", text: string) => void;
   onMyNode: (num: number) => void;
   onNode: (patch: Partial<NodeRecord> & { num: number }) => void;
@@ -66,9 +66,10 @@ export class RadioSession {
   private restoring = false;
   private userPaused = false;
   private attempt = 0;
-  private retryDelay = 2000;
   private retryTimer = 0;
   private keepAlive = 0;
+  private link: RadioBluetooth | null = null;
+  private tries = 0;
   private pickerPending = false;
   private handledFailures = new Set<number>();
 
@@ -80,6 +81,7 @@ export class RadioSession {
       return;
     }
     this.userPaused = false;
+    this.tries = 0;
     window.clearTimeout(this.retryTimer);
     // requestDevice has to be the first await in this click. A saved radio that
     // this page cannot reopen used to take that path through getDevices and the
@@ -105,7 +107,7 @@ export class RadioSession {
     if (!saved) return;
     const attempt = this.attempt;
     this.restoring = true;
-    this.hooks.onStatus("connecting", `Opening ${saved.name}`);
+    this.step("connecting", `Opening ${saved.name}`);
     try {
       const devices = await promiseTimeout(navigator.bluetooth.getDevices(), 8000, "The phone did not list the radio.");
       if (attempt !== this.attempt || this.userPaused || this.device) return;
@@ -173,18 +175,19 @@ export class RadioSession {
     window.clearTimeout(this.retryTimer);
     this.connecting = true;
     this.userPaused = false;
-    this.hooks.onStatus("connecting", `Opening ${device.name || readSavedRadio()?.name || "the radio"}`);
+    this.step("connecting", `Opening ${device.name || readSavedRadio()?.name || "the radio"}`);
     try {
       const link = await RadioBluetooth.createFromDevice(device);
       if (attempt !== this.attempt || this.userPaused) {
         void link.disconnect();
         return;
       }
+      this.link = link;
       const mesh = new MeshDevice(asMeshTransport(link));
       this.device = mesh;
       this.ble = device;
       this.bind(mesh);
-      this.hooks.onStatus("configuring", "Loading nodes and channels");
+      this.step("configuring", "Loading nodes and channels");
       void mesh.configure().catch((error: unknown) => {
         if (this.device !== mesh) return;
         this.hooks.onBanner("error", error instanceof Error ? error.message : "The radio did not finish starting.");
@@ -206,14 +209,24 @@ export class RadioSession {
   private scheduleRetry(hint?: string): void {
     if (this.userPaused) return;
     window.clearTimeout(this.retryTimer);
-    const wait = this.retryDelay;
-    this.retryDelay = Math.min(this.retryDelay * 2, 15000);
-    const seconds = Math.max(1, Math.round(wait / 1000));
-    const why = hint ? `${hint} ` : "";
-    this.hooks.onStatus("connecting", `${why}Trying again in ${seconds}s`);
+    this.tries += 1;
+    const problem = explainDrop(hint);
+    if (this.tries >= 3) {
+      this.hooks.onStatus("disconnected", problem.why, `Tried 3 times. ${problem.fix}`);
+      this.hooks.onBanner("error", `${problem.why} Tried 3 times. ${problem.fix}`);
+      return;
+    }
+    this.hooks.onStatus("connecting", `Attempt ${this.tries} of 3 failed. ${problem.why}`, problem.fix);
     this.retryTimer = window.setTimeout(() => {
+      if (this.userPaused) return;
+      this.step("connecting", "Opening the radio again");
       void this.restore();
-    }, wait);
+    }, 900);
+  }
+
+  private step(status: ConnectionStatus, action: string, note?: string): void {
+    const attempt = Math.min(this.tries + 1, 3);
+    this.hooks.onStatus(status, `Attempt ${attempt} of 3. ${action}`, note);
   }
 
   async sendText(text: string, destination: number | "broadcast", channel: number): Promise<void> {
@@ -402,27 +415,29 @@ export class RadioSession {
 
   private onStatus(status: number): void {
     if (status === 6 || status === 5) {
-      this.hooks.onStatus("configuring", "Loading nodes and channels");
+      this.step("configuring", "Loading nodes and channels");
       return;
     }
     if (status === 7) {
-      this.retryDelay = 2000;
+      this.tries = 0;
       this.armKeepAlive();
-      this.hooks.onStatus("connected", "Radio live");
+      this.hooks.onStatus("connected", "Radio live", "");
       return;
     }
     if (status === 4 || status === 3) {
-      this.hooks.onStatus("connecting", "Opening the radio");
+      this.step("connecting", "Opening the radio");
       return;
     }
     if (status === 2) {
       const paused = this.userPaused;
+      const reason = this.link?.dropReason || "gatt-disconnected";
+      this.link = null;
       this.drop();
       if (paused) {
-        this.hooks.onStatus("disconnected", "Not connected");
+        this.hooks.onStatus("disconnected", "Not connected", "");
         return;
       }
-      this.scheduleRetry("The radio dropped the link.");
+      this.scheduleRetry(reason);
     }
   }
 
@@ -839,6 +854,41 @@ function promiseTimeout<T>(work: Promise<T>, ms: number, label: string): Promise
       },
     );
   });
+}
+
+function explainDrop(reason?: string): { why: string; fix: string } {
+  const text = reason || "";
+  if (text === "gatt-disconnected") {
+    return {
+      why: "The phone closed Bluetooth.",
+      fix: "Keep this tab open, wake the radio, and move closer.",
+    };
+  }
+  if (text === "read-error" || /stopped answering|stopped sending/i.test(text)) {
+    return {
+      why: "The radio stopped sending.",
+      fix: "Wake the radio screen and move closer, then try again.",
+    };
+  }
+  if (text === "write-error" || /did not accept/i.test(text)) {
+    return {
+      why: "The radio did not accept a packet.",
+      fix: "Another phone may be connected. Close it, then try again.",
+    };
+  }
+  if (text === "notify-failed" || /could not listen|did not start/i.test(text)) {
+    return {
+      why: "The phone could not listen to the radio.",
+      fix: "Turn the radio's Bluetooth off and on, then try again.",
+    };
+  }
+  if (/did not answer/i.test(text)) {
+    return { why: "The radio did not answer.", fix: "Move closer, wake the radio, and try again." };
+  }
+  return {
+    why: text || "The link failed.",
+    fix: "Move closer and try again. If it keeps failing, choose a different radio.",
+  };
 }
 
 function bleMessage(error: unknown): string {

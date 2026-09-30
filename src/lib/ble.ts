@@ -65,6 +65,8 @@ export class RadioBluetooth {
   private needsRead = false;
   private dead = false;
   private busyRetries = 0;
+  /** Why the link closed, when this side noticed it. */
+  dropReason = "";
   private turn: Promise<void> = Promise.resolve();
 
   static async createFromDevice(device: BluetoothDevice): Promise<RadioBluetooth> {
@@ -102,6 +104,7 @@ export class RadioBluetooth {
           this.emitStatus(Status.DeviceConnected);
           void this.readFromRadio();
         } catch {
+          this.noteDrop("notify-failed");
           this.dead = true;
           this.emitStatus(Status.DeviceDisconnected, "notify-failed");
           this.gattServer.device.removeEventListener("gattserverdisconnected", this.onGattDisconnected);
@@ -123,6 +126,7 @@ export class RadioBluetooth {
           void this.readFromRadio();
         } catch (error) {
           if (!this.closingByUser) {
+            this.noteDrop("write-error");
             this.dead = true;
             this.emitStatus(Status.DeviceDisconnected, "write-error");
           }
@@ -161,6 +165,7 @@ export class RadioBluetooth {
 
   private onGattDisconnected = (): void => {
     if (this.closingByUser) return;
+    this.noteDrop("gatt-disconnected");
     this.dead = true;
     this.emitStatus(Status.DeviceDisconnected, "gatt-disconnected");
   };
@@ -197,7 +202,7 @@ export class RadioBluetooth {
             this.needsRead = true;
             continue;
           }
-          this.fail("read-error");
+          this.fail(error instanceof Error && error.message ? error.message : "read-error");
           return;
         }
       }
@@ -218,8 +223,13 @@ export class RadioBluetooth {
     return true;
   }
 
+  private noteDrop(reason: string): void {
+    if (!this.dropReason) this.dropReason = reason;
+  }
+
   private fail(reason: string): void {
     if (this.dead) return;
+    this.noteDrop(reason);
     this.dead = true;
     this.emitStatus(Status.DeviceDisconnected, reason);
     try {
