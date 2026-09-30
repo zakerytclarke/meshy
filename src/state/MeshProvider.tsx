@@ -10,6 +10,7 @@ import {
 import { threadKey } from "../lib/format";
 import { RadioSession, bluetoothSupported } from "../lib/session";
 import { paintCells } from "../lib/signal";
+import { buildShare, mergeShare, parseShare, type CoverageShare } from "../lib/share";
 import {
   type Banner,
   type ChannelRecord,
@@ -58,7 +59,8 @@ interface MeshApi extends AppState {
   messageNode: (num: number) => void;
   requestPosition: (num: number) => void;
   traceRoute: (num: number) => void;
-  clearLogs: () => void;
+  exportCoverage: () => CoverageShare;
+  importCoverage: (value: unknown) => boolean;
   clearCoverage: () => void;
   clearChats: () => void;
   dismissBanner: () => void;
@@ -415,7 +417,25 @@ export function MeshProvider({ children }: { children: ReactNode }) {
           }));
         }
       },
-      clearLogs: () => commit((current) => ({ ...current, logs: [] })),
+      exportCoverage: () => buildShare(stateRef.current.logs, stateRef.current.cells, stateRef.current.nodes),
+      importCoverage: (value) => {
+        const share = parseShare(value);
+        if (!share) {
+          commit((current) => ({ ...current, banner: { tone: "error", text: "That file is not a Meshy coverage export." } }));
+          return false;
+        }
+        commit((current) => {
+          const merged = mergeShare(current, share);
+          return {
+            ...current,
+            logs: merged.logs,
+            cells: merged.cells,
+            nodes: merged.nodes,
+            banner: { tone: "ok", text: "Coverage combined. Message text stays out of the imported file." },
+          };
+        });
+        return true;
+      },
       clearCoverage: () => commit((current) => ({ ...current, cells: {} })),
       clearChats: () => commit((current) => ({ ...current, messages: [], activeChat: null })),
       dismissBanner: () => commit((current) => ({ ...current, banner: null })),

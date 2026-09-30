@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { formatClock } from "../lib/format";
 import { useMesh } from "../state/MeshProvider";
 import type { LogEntry } from "../types";
@@ -20,7 +20,27 @@ export function Logs() {
   const [dir, setDir] = useState<DirFilter>("all");
   const [openId, setOpenId] = useState<string | null>(null);
   const [limit, setLimit] = useState(200);
-  const [armed, setArmed] = useState(false);
+  const fileRef = useRef<HTMLInputElement>(null);
+
+  function exportLogs() {
+    const file = mesh.exportCoverage();
+    const blob = new Blob([JSON.stringify(file)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = "meshy-coverage.json";
+    link.click();
+    URL.revokeObjectURL(url);
+  }
+
+  async function importLogs(file: File) {
+    try {
+      const parsed: unknown = JSON.parse(await file.text());
+      mesh.importCoverage(parsed);
+    } catch {
+      mesh.importCoverage(null);
+    }
+  }
 
   const filtered = useMemo(() => {
     const needle = query.trim().toLowerCase();
@@ -39,22 +59,27 @@ export function Logs() {
       <header className="page-head">
         <div>
           <h2>Log</h2>
-          <p>Every packet this browser receives or sends. Saved on this device.</p>
+          <p>Packets this browser sends and receives. Export leaves out message text, and an import adds to the map.</p>
         </div>
-        <button
-          className={armed ? "danger" : "ghost"}
-          onClick={() => {
-            if (!armed) {
-              setArmed(true);
-              window.setTimeout(() => setArmed(false), 3000);
-              return;
-            }
-            mesh.clearLogs();
-            setArmed(false);
-          }}
-        >
-          {armed ? "Confirm clear" : "Clear log"}
-        </button>
+        <div className="row-actions">
+          <button className="ghost" onClick={exportLogs}>
+            Export
+          </button>
+          <button className="ghost" onClick={() => fileRef.current?.click()}>
+            Import
+          </button>
+          <input
+            ref={fileRef}
+            type="file"
+            accept="application/json,.json"
+            hidden
+            onChange={(event) => {
+              const file = event.target.files?.[0];
+              event.target.value = "";
+              if (file) void importLogs(file);
+            }}
+          />
+        </div>
       </header>
       <div className="log-tools">
         <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search the log" />
