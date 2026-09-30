@@ -175,7 +175,23 @@ export class RadioSession {
     this.connecting = true;
     this.userPaused = false;
     const name = device.name || readSavedRadio()?.name || "the radio";
-    this.step("connecting", `Opening ${name}`);
+    const android = /Android/i.test(navigator.userAgent);
+    this.step(
+      "connecting",
+      android ? "Waiting for the Bluetooth pairing prompt" : `Opening ${name}`,
+      android
+        ? "Pull down the notification shade and accept the radio. If it asks for a code, enter 123456. Close the Meshtastic app if it is open — it keeps the radio to itself."
+        : undefined,
+    );
+    const pairTimer = android
+      ? window.setTimeout(() => {
+          if (attempt !== this.attempt || this.userPaused) return;
+          this.hooks.onBanner(
+            "ok",
+            "Android is waiting for you to pair. Open the notification shade, accept the radio, and enter 123456 if it asks for a PIN. Force-stop the Meshtastic app if it is already connected.",
+          );
+        }, 5000)
+      : 0;
     try {
       // Do not disconnect() before connect(). On Android that call, while a
       // previous Bluetooth request is still open, makes the next connect wait minutes.
@@ -199,6 +215,7 @@ export class RadioSession {
       this.device = null;
       this.scheduleRetry(bleMessage(error), attempt);
     } finally {
+      window.clearTimeout(pairTimer);
       if (attempt === this.attempt) this.connecting = false;
     }
   }

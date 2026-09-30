@@ -37,13 +37,17 @@ export function Radio() {
               <i className="spin" />
               {mesh.statusDetail}
             </p>
+          ) : mesh.statusNote ? (
+            <p>{mesh.statusDetail}</p>
           ) : null}
           {mesh.statusNote ? <p className="hint">{mesh.statusNote}</p> : null}
           <p>
             {mesh.bluetoothAvailable
-              ? mesh.radioName
-                ? `Stays paired with ${mesh.radioName}. It reconnects when you reopen the page or the link drops.`
-                : "Uses Bluetooth. Keep the radio on and nearby, then pick it from the browser list."
+              ? /Android/i.test(navigator.userAgent)
+                ? "On a phone, Android shows its own pairing prompt. Pull down notifications, accept the radio, and enter 123456 if it asks for a code. Close the Meshtastic app first if it is open."
+                : mesh.radioName
+                  ? `Stays paired with ${mesh.radioName}. It reconnects when you reopen the page or the link drops.`
+                  : "Uses Bluetooth. Keep the radio on and nearby, then pick it from the browser list."
               : "This browser can't open Bluetooth. Use Chrome or Edge on this computer."}
           </p>
         </div>
