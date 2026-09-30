@@ -34,8 +34,22 @@ export function blockKey(x: number, y: number): string {
 }
 
 export function blockCorners(x: number, y: number): { north: number; south: number; west: number; east: number } {
+  return spanCorners(x, y, 1);
+}
+
+/** How many city blocks merge into one drawn square. Zooming out doubles the square. */
+export function displayStep(zoom: number): number {
+  const levels = Math.max(0, Math.floor(BLOCK_ZOOM - zoom));
+  return 2 ** Math.min(levels, 14);
+}
+
+export function displayOrigin(x: number, y: number, step: number): { x: number; y: number } {
+  return { x: Math.floor(x / step) * step, y: Math.floor(y / step) * step };
+}
+
+export function spanCorners(x: number, y: number, step: number): { north: number; south: number; west: number; east: number } {
   const northWest = unprojectBlock(x * BLOCK_PX, y * BLOCK_PX);
-  const southEast = unprojectBlock((x + 1) * BLOCK_PX, (y + 1) * BLOCK_PX);
+  const southEast = unprojectBlock((x + step) * BLOCK_PX, (y + step) * BLOCK_PX);
   return { north: northWest.lat, south: southEast.lat, west: northWest.lng, east: southEast.lng };
 }
 

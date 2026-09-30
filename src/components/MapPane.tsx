@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import L from "leaflet";
 import { formatAgo, hopCount, nodeName, shortName, escapeHtml } from "../lib/format";
-import { blockCorners, blockIndex, cellEdges, colorForScore } from "../lib/signal";
+import { blockIndex, cellEdges, colorForScore, displayOrigin, displayStep, spanCorners } from "../lib/signal";
 import { BROADCAST_NUM, type NodeRecord, type SignalCell } from "../types";
 import { useMesh } from "../state/MeshProvider";
 
@@ -199,7 +199,9 @@ export function MapPane({ active }: { active: boolean }) {
   }
 
   const square =
-    selectedAt && mapRef.current ? describeSquare(selectedAt, mesh.cells, mesh.nodes, mesh.myNodeNum) : null;
+    selectedAt && mapRef.current
+      ? describeSquare(selectedAt, mesh.cells, mesh.nodes, mesh.myNodeNum, mapRef.current.getZoom())
+      : null;
 
   return (
     <div className="map-wrap">
@@ -233,7 +235,7 @@ function CellCard({
           Close
         </button>
       </header>
-      <p>About {square.meters} m across.</p>
+      <p>{square.across}</p>
       {square.nodes.length === 0 ? <p>No nodes with a GPS fix here, and none heard from this square.</p> : null}
       {square.nodes.length > 0 ? (
         <div className="heard-list">
@@ -294,19 +296,20 @@ class SignalGrid extends L.Layer {
     const canvas = this.canvas;
     if (!map || !canvas) return;
     const bounds = map.getBounds().pad(0.35);
+    const step = displayStep(map.getZoom());
     const northWest = blockIndex(bounds.getNorth(), bounds.getWest());
     const southEast = blockIndex(bounds.getSouth(), bounds.getEast());
-    const x0 = Math.min(northWest.x, southEast.x);
-    const x1 = Math.max(northWest.x, southEast.x);
-    const y0 = Math.min(northWest.y, southEast.y);
-    const y1 = Math.max(northWest.y, southEast.y);
-    const cols = x1 - x0 + 1;
-    const rows = y1 - y0 + 1;
-    const sample = blockCorners(x0, y0);
+    const x0 = displayOrigin(Math.min(northWest.x, southEast.x), 0, step).x;
+    const x1 = displayOrigin(Math.max(northWest.x, southEast.x), 0, step).x;
+    const y0 = displayOrigin(0, Math.min(northWest.y, southEast.y), step).y;
+    const y1 = displayOrigin(0, Math.max(northWest.y, southEast.y), step).y;
+    const cols = (x1 - x0) / step + 1;
+    const rows = (y1 - y0) / step + 1;
+    const sample = spanCorners(x0, y0, step);
     const sampleNw = map.latLngToLayerPoint([sample.north, sample.west]);
     const sampleSe = map.latLngToLayerPoint([sample.south, sample.east]);
     const side = Math.max(1, Math.abs(sampleSe.x - sampleNw.x));
-    const drawGrid = side >= 14 && cols > 0 && rows > 0 && cols * rows <= 2200;
+    const drawGrid = side >= 14 && cols > 0 && rows > 0 && cols * rows <= 8000;
     const origin = map.latLngToLayerPoint([sample.north, sample.west]);
     L.DomUtil.setPosition(canvas, L.point(Math.round(origin.x), Math.round(origin.y)));
     const ratio = window.devicePixelRatio || 1;
@@ -323,10 +326,10 @@ class SignalGrid extends L.Layer {
     if (drawGrid) {
       context.strokeStyle = "rgba(28, 40, 34, 0.28)";
       context.lineWidth = 1;
-      for (let iy = y0; iy <= y1; iy += 1) {
-        for (let ix = x0; ix <= x1; ix += 1) {
-          const left = (ix - x0) * side;
-          const top = (iy - y0) * side;
+      for (let iy = y0; iy <= y1; iy += step) {
+        for (let ix = x0; ix <= x1; ix += step) {
+          const left = ((ix - x0) / step) * side;
+          const top = ((iy - y0) / step) * side;
           context.strokeRect(left + 0.5, top + 0.5, side - 1, side - 1);
         }
       }
@@ -334,29 +337,31 @@ class SignalGrid extends L.Layer {
     const best = new Map<string, SignalCell>();
     for (const cell of Object.values(this.getCells())) {
       const block = cellBlock(cell);
-      if (!block || block.x < x0 || block.x > x1 || block.y < y0 || block.y > y1) continue;
-      const key = `${block.x}:${block.y}`;
+      if (!block) continue;
+      const parent = displayOrigin(block.x, block.y, step);
+      if (parent.x < x0 || parent.x > x1 || parent.y < y0 || parent.y > y1) continue;
+      const key = `${parent.x}:${parent.y}`;
       const current = best.get(key);
       if (!current || cell.score > current.score) best.set(key, cell);
     }
     const filter = this.getFilter();
     for (const [key, cell] of best) {
       const [ix, iy] = key.split(":").map(Number);
-      const left = ((ix || 0) - x0) * side;
-      const top = ((iy || 0) - y0) * side;
+      const left = (((ix || 0) - x0) / step) * side;
+      const top = (((iy || 0) - y0) / step) * side;
       const dim = (filter === "node" && cell.reach !== "node") || (filter === "mesh" && cell.reach !== "mesh");
-      context.globalAlpha = dim ? 0.12 : side < 8 ? 0.7 : 0.38;
+      context.globalAlpha = dim ? 0.12 : 0.38;
       context.fillStyle = colorForScore(cell.score);
-      context.fillRect(left, top, Math.max(side, 3), Math.max(side, 3));
+      context.fillRect(left, top, side, side);
       context.globalAlpha = 1;
     }
     const selected = this.getSelected();
     if (selected) {
-      const hit = blockIndex(selected.lat, selected.lng);
+      const hit = displayOrigin(blockIndex(selected.lat, selected.lng).x, blockIndex(selected.lat, selected.lng).y, step);
       if (hit.x >= x0 && hit.x <= x1 && hit.y >= y0 && hit.y <= y1) {
         context.strokeStyle = "#d6ff4a";
         context.lineWidth = 2;
-        context.strokeRect((hit.x - x0) * side + 1.5, (hit.y - y0) * side + 1.5, Math.max(side - 3, 4), Math.max(side - 3, 4));
+        context.strokeRect(((hit.x - x0) / step) * side + 1.5, ((hit.y - y0) / step) * side + 1.5, Math.max(side - 3, 4), Math.max(side - 3, 4));
       }
     }
   };
@@ -373,7 +378,7 @@ interface SquareNode {
 
 interface SquareInfo {
   nodes: SquareNode[];
-  meters: number;
+  across: string;
 }
 
 function describeSquare(
@@ -381,9 +386,12 @@ function describeSquare(
   cells: Record<string, SignalCell>,
   nodes: NodeRecord[],
   myNodeNum: number,
+  zoom: number,
 ): SquareInfo {
-  const hit = blockIndex(point.lat, point.lng);
-  const box = blockCorners(hit.x, hit.y);
+  const step = displayStep(zoom);
+  const fine = blockIndex(point.lat, point.lng);
+  const hit = displayOrigin(fine.x, fine.y, step);
+  const box = spanCorners(hit.x, hit.y, step);
   const listed = new Map<number, SquareNode>();
   for (const node of nodes) {
     if (node.num === myNodeNum || node.lat == null || node.lng == null) continue;
@@ -399,7 +407,9 @@ function describeSquare(
   }
   for (const cell of Object.values(cells)) {
     const block = cellBlock(cell);
-    if (!block || block.x !== hit.x || block.y !== hit.y) continue;
+    if (!block) continue;
+    const parent = displayOrigin(block.x, block.y, step);
+    if (parent.x !== hit.x || parent.y !== hit.y) continue;
     const heard = new Map<number, number>();
     for (const event of cell.history ?? []) heard.set(event.num, Math.max(heard.get(event.num) ?? 0, event.time));
     for (const num of cell.heard ?? []) if (!heard.has(num)) heard.set(num, cell.updated);
@@ -424,7 +434,11 @@ function describeSquare(
     return (b.lastHeard ?? 0) - (a.lastHeard ?? 0);
   });
   const meters = Math.round(movedMeters({ lat: box.south, lng: box.west }, { lat: box.south, lng: box.east }));
-  return { nodes: list, meters };
+  const across =
+    meters >= 1000
+      ? `About ${meters >= 10000 ? Math.round(meters / 1000) : (meters / 1000).toFixed(1)} km across.`
+      : `About ${meters} m across.`;
+  return { nodes: list, across };
 }
 
 function cellBlock(cell: SignalCell): { x: number; y: number } | null {
