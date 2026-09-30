@@ -446,7 +446,7 @@ function describeSquare(
     for (const event of cell.history ?? []) heard.set(event.num, Math.max(heard.get(event.num) ?? 0, event.time));
     for (const num of cell.heard ?? []) if (!heard.has(num)) heard.set(num, cell.updated);
     for (const [num, time] of heard) {
-      if (listed.has(num) || num === myNodeNum) continue;
+      if (listed.has(num) || num === 0) continue;
       const node = nodes.find((item) => item.num === num);
       listed.set(num, {
         num,

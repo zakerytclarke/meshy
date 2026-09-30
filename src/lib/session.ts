@@ -18,6 +18,7 @@ import {
   type LogEntry,
   type NodeRecord,
   type RadioSnapshot,
+  BROADCAST_NUM,
 } from "../types";
 
 export interface SessionHooks {
@@ -565,6 +566,38 @@ export class RadioSession {
       hops,
       snr: mesh?.rxSnr,
       rssi: mesh && mesh.rxRssi !== 0 ? mesh.rxRssi : undefined,
+    });
+    this.hearAck(packet, mesh);
+  }
+
+  /**
+   * An ack means the sender reached the recipient. The sender was heard in the
+   * recipient's square when that recipient has a GPS fix.
+   */
+  private hearAck(packet: Meta<Protobuf.Mesh.Routing>, mesh: Protobuf.Mesh.MeshPacket | null): void {
+    const matched = mesh && mesh.id === packet.id ? mesh : null;
+    if (matched?.viaMqtt) return;
+    const recipient = packet.from;
+    const sender = packet.to;
+    if (recipient === 0 || recipient === BROADCAST_NUM || sender === 0 || sender === BROADCAST_NUM || sender === recipient) return;
+    const point = this.pointFor(recipient);
+    if (!point) return;
+    const hops = matched ? hopsFromPacket(matched) : null;
+    this.hooks.onObservation({
+      points: [
+        {
+          ...point,
+          heard: [sender],
+          event: { time: Date.now(), num: sender, hops, label: "Ack" },
+        },
+      ],
+      snr: matched?.rxSnr,
+      rssi: matched && matched.rxRssi !== 0 ? matched.rxRssi : undefined,
+      hops,
+      dir: "rx",
+      contact: true,
+      note: `${this.who(sender)} reached ${this.who(recipient)}`,
+      time: Date.now(),
     });
   }
 
