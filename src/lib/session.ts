@@ -509,10 +509,7 @@ export class RadioSession {
     if (!point || node?.viaMqtt) return;
     const mesh = this.lastMesh && this.lastMesh.id === packet.id ? this.lastMesh : null;
     if (mesh?.viaMqtt) return;
-    const hops = mesh ? hopsFromPacket(mesh) : (node?.hopsAway ?? null);
-    const snr = mesh ? mesh.rxSnr : node?.snr;
-    const rssi = mesh && mesh.rxRssi !== 0 ? mesh.rxRssi : undefined;
-    this.observe(packet.from, "rx", hops, snr, rssi, heardNote(this.who(packet.from), hops));
+    this.markVisited([point]);
   }
 
   private onChannel(channel: Protobuf.Channel.Channel): void {
@@ -570,43 +567,16 @@ export class RadioSession {
       snr: mesh?.rxSnr,
       rssi: mesh && mesh.rxRssi !== 0 ? mesh.rxRssi : undefined,
     });
-    if (!mesh || mesh.viaMqtt) return;
-    const remote = packet.from !== this.hooks.getMyNum() && packet.from !== 0 ? packet.from : null;
-    this.observe(
-      remote,
-      "tx",
-      hops,
-      mesh.rxSnr,
-      mesh.rxRssi !== 0 ? mesh.rxRssi : undefined,
-      remote ? detail : "A nearby radio rebroadcast this.",
-      true,
-    );
   }
 
   private onTrace(packet: Meta<Protobuf.Mesh.RouteDiscovery>): void {
     const route = [...packet.data.route, ...packet.data.routeBack];
-    const hops = Math.max(0, route.length - 1);
-    const toward = packet.data.snrTowards[0];
-    const snr = toward == null ? undefined : toward / 4;
     const points = route
       .map((num) => this.pointFor(num))
       .filter((point): point is { lat: number; lng: number } => point != null);
     const self = this.selfPoint();
     if (self) points.push(self);
-    if (points.length === 0) return;
-    this.hooks.onObservation({
-      points,
-      snr,
-      hops: hops >= 1 ? hops : 0,
-      dir: "rx",
-      note:
-        hops >= 2
-          ? `Traceroute crossed ${hops} hops.`
-          : hops === 1
-            ? "Traceroute was relayed once."
-            : "Traceroute reached a node directly.",
-      time: Date.now(),
-    });
+    this.markVisited(points);
   }
 
   private onTelemetry(packet: Meta<Protobuf.Telemetry.Telemetry>): void {
@@ -640,6 +610,18 @@ export class RadioSession {
     );
   }
 
+  private markVisited(points: { lat: number; lng: number }[]): void {
+    if (points.length === 0) return;
+    this.hooks.onObservation({
+      points,
+      hops: null,
+      dir: "rx",
+      visit: true,
+      note: "Been here",
+      time: Date.now(),
+    });
+  }
+
   private observe(
     remote: number | null,
     dir: "rx" | "tx",
@@ -651,29 +633,30 @@ export class RadioSession {
     label = "Packet",
     text?: string,
   ): void {
-    const points: { lat: number; lng: number; heard?: number[]; event?: { time: number; num: number; hops: number | null; label: string; text?: string } }[] = [];
+    const message = Boolean(text) || label === "Text";
     if (remote != null) {
       const point = this.pointFor(remote);
-      if (point) points.push(point);
+      if (point) this.markVisited([point]);
     }
-    if (includeSelf) {
-      const self = this.selfPoint();
-      if (self) {
-        const event =
-          remote != null && remote !== this.hooks.getMyNum() && (text || label === "Text")
-            ? { time: Date.now(), num: remote, hops, label, text: text ? clip(text) : undefined }
-            : undefined;
-        const heard = remote != null && remote !== this.hooks.getMyNum() ? [remote] : undefined;
-        points.push({ ...self, heard, event });
-      }
+    if (!includeSelf) return;
+    const self = this.selfPoint();
+    if (!self) return;
+    if (!message) {
+      this.markVisited([self]);
+      return;
     }
-    if (points.length === 0) return;
+    const event =
+      remote != null && remote !== this.hooks.getMyNum()
+        ? { time: Date.now(), num: remote, hops, label, text: text ? clip(text) : undefined }
+        : undefined;
+    const heard = remote != null && remote !== this.hooks.getMyNum() ? [remote] : undefined;
     this.hooks.onObservation({
-      points,
+      points: [{ ...self, heard, event }],
       snr,
       rssi,
       hops,
       dir,
+      contact: true,
       note,
       time: Date.now(),
     });

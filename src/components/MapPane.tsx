@@ -346,7 +346,7 @@ class SignalGrid extends L.Layer {
       if (parent.x < x0 || parent.x > x1 || parent.y < y0 || parent.y > y1) continue;
       const key = `${parent.x}:${parent.y}`;
       const current = best.get(key);
-      if (!current || cell.score > current.score) best.set(key, cell);
+      if (!current || preferCell(cell, current)) best.set(key, cell);
     }
     const filter = this.getFilter();
     for (const [key, cell] of best) {
@@ -354,8 +354,8 @@ class SignalGrid extends L.Layer {
       const left = (((ix || 0) - x0) / step) * side;
       const top = (((iy || 0) - y0) / step) * side;
       const dim = (filter === "node" && cell.reach !== "node") || (filter === "mesh" && cell.reach !== "mesh");
-      context.globalAlpha = dim ? 0.12 : 0.38;
-      context.fillStyle = colorForScore(cell.score);
+      context.globalAlpha = dim ? 0.12 : cell.contact ? 0.38 : 0.72;
+      context.fillStyle = cell.contact ? colorForScore(cell.score) : "rgb(138, 144, 140)";
       context.fillRect(left, top, side, side);
       context.globalAlpha = 1;
     }
@@ -446,6 +446,11 @@ function describeSquare(
       ? `About ${meters >= 10000 ? Math.round(meters / 1000) : (meters / 1000).toFixed(1)} km across.`
       : `About ${meters} m across.`;
   return { nodes: list, across };
+}
+
+function preferCell(next: SignalCell, current: SignalCell): boolean {
+  if (Boolean(next.contact) !== Boolean(current.contact)) return Boolean(next.contact);
+  return next.score > current.score;
 }
 
 function cellBlock(cell: SignalCell): { x: number; y: number } | null {

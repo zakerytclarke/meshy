@@ -7,6 +7,10 @@ export interface Observation {
   hops: number | null;
   dir: "rx" | "tx";
   missed?: boolean;
+  /** A message was received here, or a send from here was acknowledged. */
+  contact?: boolean;
+  /** Someone was here, with no message yet. */
+  visit?: boolean;
   note: string;
   time: number;
 }
@@ -133,7 +137,7 @@ export function reachTitle(cell: Pick<SignalCell, "reach" | "hops">): string {
 
 export function paintCells(prev: Record<string, SignalCell>, observation: Observation): Record<string, SignalCell> {
   if (observation.points.length === 0) return prev;
-  const judged = judge(observation);
+  const judged = observation.contact ? judge(observation) : null;
   const next = { ...prev };
   const seen = new Set<string>();
   for (const point of observation.points) {
@@ -144,6 +148,25 @@ export function paintCells(prev: Record<string, SignalCell>, observation: Observ
     if (seen.has(key)) continue;
     seen.add(key);
     const existing = next[key];
+    if (!observation.contact) {
+      if (existing?.contact) continue;
+      next[key] = {
+        key,
+        latIndex,
+        lngIndex,
+        reach: "visited",
+        score: 0,
+        contact: false,
+        hops: existing?.hops ?? null,
+        rx: existing?.rx ?? 0,
+        tx: existing?.tx ?? 0,
+        updated: observation.time,
+        note: existing?.note || observation.note,
+        heard: existing?.heard,
+        history: existing?.history,
+      };
+      continue;
+    }
     const heard = existing?.heard ? existing.heard.slice() : [];
     for (const num of point.heard ?? []) {
       if (!heard.includes(num)) heard.push(num);
@@ -154,8 +177,9 @@ export function paintCells(prev: Record<string, SignalCell>, observation: Observ
       key,
       latIndex,
       lngIndex,
-      reach: judged.reach,
-      score: judged.score,
+      reach: judged?.reach ?? "node",
+      score: judged?.score ?? existing?.score ?? 0,
+      contact: true,
       snr: observation.snr ?? existing?.snr,
       rssi: observation.rssi ?? existing?.rssi,
       hops: observation.hops,

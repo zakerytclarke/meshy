@@ -6,8 +6,8 @@ export type ConnectionStatus =
   | "configuring"
   | "connected";
 
-/** Unknown until a packet touches the square. Miss, a node, or mesh travel after that. */
-export type Reach = "unknown" | "miss" | "node" | "mesh";
+/** Outline until someone has been here. Grey after a visit. Color after a message. */
+export type Reach = "unknown" | "visited" | "miss" | "node" | "mesh";
 
 export type DeliveryState =
   | "pending"
@@ -65,6 +65,8 @@ export interface SignalCell {
   reach: Exclude<Reach, "unknown">;
   /** 0 is a weak local contact. 1 is a strong packet that propagated. */
   score: number;
+  /** True after a message was received here or a send was acknowledged. */
+  contact?: boolean;
   snr?: number;
   rssi?: number;
   hops: number | null;

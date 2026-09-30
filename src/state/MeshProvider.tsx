@@ -9,7 +9,7 @@ import {
 } from "react";
 import { threadKey } from "../lib/format";
 import { RadioSession, bluetoothSupported } from "../lib/session";
-import { paintCells, type Observation } from "../lib/signal";
+import { paintCells } from "../lib/signal";
 import {
   type Banner,
   type ChannelRecord,
@@ -241,7 +241,18 @@ export function MeshProvider({ children }: { children: ReactNode }) {
         };
         const previous = stateRef.current.browserFix;
         if (previous && movedMeters(previous, next) < 8) return;
-        commit((current) => ({ ...current, browserFix: next }));
+        commit((current) => ({
+          ...current,
+          browserFix: next,
+          cells: paintCells(current.cells, {
+            points: [{ lat: next.lat, lng: next.lng }],
+            hops: null,
+            dir: "rx",
+            visit: true,
+            note: "Been here",
+            time: next.time,
+          }),
+        }));
       },
       () => {
         /* The radio GPS can still place the node. */
@@ -504,27 +515,30 @@ function applyDelivery(
   delivery: DeliveryState,
   extra?: Partial<ChatMessage>,
 ): AppState {
-  let newlyFailed = false;
+  let acknowledged = false;
   const messages = current.messages.map((message) => {
     if (message.packetId !== packetId) return message;
     if (message.delivery === "failed") return message;
     if (message.delivery === "hit-mesh" && delivery === "hit-node") return message;
-    if (delivery === "failed") newlyFailed = true;
+    if (message.delivery !== "hit-node" && message.delivery !== "hit-mesh" && (delivery === "hit-node" || delivery === "hit-mesh")) {
+      acknowledged = true;
+    }
     return { ...message, ...extra, delivery };
   });
   let cells = current.cells;
-  if (newlyFailed) {
+  if (acknowledged) {
     const here = selfPoint(current);
     if (here) {
-      const observation: Observation = {
+      cells = paintCells(cells, {
         points: [here],
-        hops: null,
+        hops: extra?.hops ?? null,
+        snr: extra?.snr,
+        rssi: extra?.rssi,
         dir: "tx",
-        missed: true,
-        note: "Sent from here. No node answered.",
+        contact: true,
+        note: extra?.detail || "Message sent",
         time: Date.now(),
-      };
-      cells = paintCells(cells, observation);
+      });
     }
   }
   return { ...current, messages, cells };
