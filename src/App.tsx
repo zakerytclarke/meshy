@@ -23,7 +23,7 @@ export function App() {
             Live
           </button>
         ) : (
-          <button className="status-pill" onClick={() => mesh.connect()} disabled={mesh.status === "connecting" || mesh.status === "configuring"}>
+          <button className="status-pill" onClick={() => mesh.connect()} disabled={mesh.status === "configuring"}>
             {mesh.status === "disconnected" ? "Connect radio" : mesh.statusDetail}
           </button>
         )}
@@ -41,11 +41,11 @@ export function App() {
         <div className="pane" hidden={mesh.tab !== "map"}>
           {mapSeen ? <MapPane active={mesh.tab === "map"} /> : null}
         </div>
-        <div className="pane" hidden={mesh.tab !== "logs"}>
-          <Logs />
-        </div>
         <div className="pane" hidden={mesh.tab !== "radio"}>
           <Radio />
+        </div>
+        <div className="pane" hidden={mesh.tab !== "logs"}>
+          <Logs />
         </div>
       </div>
       <TabBar />

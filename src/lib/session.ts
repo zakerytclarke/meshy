@@ -67,6 +67,7 @@ export class RadioSession {
   private attempt = 0;
   private retryDelay = 1000;
   private retryTimer = 0;
+  private pickerPending = false;
   private handledFailures = new Set<number>();
 
   constructor(private readonly hooks: SessionHooks) {}
@@ -77,27 +78,21 @@ export class RadioSession {
       return;
     }
     this.userPaused = false;
-    if (forcePicker) {
-      this.userPaused = true;
+    window.clearTimeout(this.retryTimer);
+    // requestDevice has to be the first await in this click. A saved radio that
+    // this page cannot reopen used to take that path through getDevices and the
+    // chooser never appeared.
+    if (forcePicker || !this.ble) {
+      if (this.pickerPending) return;
       this.attempt += 1;
-      window.clearTimeout(this.retryTimer);
       const previous = this.device;
       this.drop();
-      this.userPaused = false;
       void previous?.disconnect();
       await this.pick();
       return;
     }
     if (this.device || this.connecting) return;
-    if (this.ble) {
-      await this.open(this.ble);
-      return;
-    }
-    if (readSavedRadio()) {
-      await this.restore();
-      return;
-    }
-    await this.pick();
+    await this.open(this.ble);
   }
 
   /** Reopen the last radio without a picker. Safe to call on page load. */
@@ -106,11 +101,12 @@ export class RadioSession {
     if (!bluetoothSupported() || !navigator.bluetooth?.getDevices) return;
     const saved = readSavedRadio();
     if (!saved) return;
+    const attempt = this.attempt;
     this.restoring = true;
     this.hooks.onStatus("connecting", `Reconnecting to ${saved.name}`);
     try {
       const devices = await navigator.bluetooth.getDevices();
-      if (this.userPaused || this.device) return;
+      if (attempt !== this.attempt || this.userPaused || this.device) return;
       const match = devices.find((device) => device.id === saved.id);
       if (!match) {
         this.hooks.onStatus("disconnected", "Not connected");
@@ -119,7 +115,7 @@ export class RadioSession {
       this.ble = match;
       await this.open(match);
     } catch (error) {
-      if (!this.userPaused) this.scheduleRetry(bleMessage(error));
+      if (attempt === this.attempt && !this.userPaused) this.scheduleRetry(bleMessage(error));
     } finally {
       this.restoring = false;
     }
@@ -141,6 +137,8 @@ export class RadioSession {
   }
 
   private async pick(): Promise<void> {
+    if (this.pickerPending) return;
+    this.pickerPending = true;
     this.hooks.onStatus("connecting", "Choose your radio");
     try {
       const device = await navigator.bluetooth.requestDevice({
@@ -152,6 +150,8 @@ export class RadioSession {
       this.hooks.onStatus("disconnected", "Not connected");
       const message = bleMessage(error);
       if (!/cancel/i.test(message)) this.hooks.onBanner("error", message);
+    } finally {
+      this.pickerPending = false;
     }
   }
 

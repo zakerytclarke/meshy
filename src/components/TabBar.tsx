@@ -7,8 +7,8 @@ import { threadKey } from "../lib/format";
 const TABS: { id: TabId; label: string; icon: () => ReactElement }[] = [
   { id: "messages", label: "Messages", icon: IconMessages },
   { id: "map", label: "Map", icon: IconMap },
-  { id: "logs", label: "Logs", icon: IconLogs },
   { id: "radio", label: "Radio", icon: IconRadio },
+  { id: "logs", label: "Logs", icon: IconLogs },
 ];
 
 export function TabBar() {

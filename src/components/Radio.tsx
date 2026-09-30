@@ -46,7 +46,7 @@ export function Radio() {
           </button>
         ) : (
           <div className="row-actions">
-            <button className="primary large" onClick={() => mesh.connect()} disabled={mesh.status === "connecting" || mesh.status === "configuring" || !mesh.bluetoothAvailable}>
+            <button className="primary large" onClick={() => mesh.connect()} disabled={mesh.status === "configuring" || !mesh.bluetoothAvailable}>
               {mesh.status === "connecting" || mesh.status === "configuring"
                 ? mesh.statusDetail
                 : mesh.radioName
