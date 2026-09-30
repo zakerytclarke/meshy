@@ -67,6 +67,7 @@ export class RadioSession {
   private userPaused = false;
   private attempt = 0;
   private retryTimer = 0;
+  private tick = 0;
   private keepAlive = 0;
   private link: RadioBluetooth | null = null;
   private tries = 0;
@@ -83,6 +84,7 @@ export class RadioSession {
     this.userPaused = false;
     this.tries = 0;
     window.clearTimeout(this.retryTimer);
+    window.clearInterval(this.tick);
     // requestDevice has to be the first await in this click. A saved radio that
     // this page cannot reopen used to take that path through getDevices and the
     // chooser never appeared.
@@ -119,7 +121,7 @@ export class RadioSession {
       this.ble = match;
       await this.open(match);
     } catch (error) {
-      if (attempt === this.attempt && !this.userPaused) this.scheduleRetry(bleMessage(error));
+      if (attempt === this.attempt && !this.userPaused) this.scheduleRetry(bleMessage(error), attempt);
     } finally {
       this.restoring = false;
     }
@@ -129,6 +131,7 @@ export class RadioSession {
     this.userPaused = true;
     this.attempt += 1;
     window.clearTimeout(this.retryTimer);
+    window.clearInterval(this.tick);
     const device = this.device;
     this.drop();
     this.hooks.onStatus("disconnected", "Not connected");
@@ -175,13 +178,40 @@ export class RadioSession {
     window.clearTimeout(this.retryTimer);
     this.connecting = true;
     this.userPaused = false;
-    this.step("connecting", `Opening ${device.name || readSavedRadio()?.name || "the radio"}`);
+    const name = device.name || readSavedRadio()?.name || "the radio";
+    const started = Date.now();
+    let action = this.tries > 0 ? "Resetting Bluetooth" : `Opening ${name}`;
+    const paint = () => {
+      if (attempt !== this.attempt) return;
+      const seconds = Math.max(1, Math.round((Date.now() - started) / 1000));
+      this.step("connecting", seconds <= 1 ? action : `${action}, ${seconds}s`);
+    };
+    paint();
+    window.clearInterval(this.tick);
+    this.tick = window.setInterval(paint, 1000);
     try {
-      const link = await RadioBluetooth.createFromDevice(device);
+      if (this.tries > 0 || device.gatt?.connected) {
+        try {
+          device.gatt?.disconnect();
+        } catch {
+          /* The phone may already have dropped the radio. */
+        }
+        await wait(600);
+        if (attempt !== this.attempt || this.userPaused) return;
+      }
+      action = `Opening ${name}`;
+      paint();
+      const link = await promiseTimeout(
+        RadioBluetooth.createFromDevice(device),
+        8000,
+        "The radio did not answer.",
+      );
       if (attempt !== this.attempt || this.userPaused) {
         void link.disconnect();
         return;
       }
+      window.clearInterval(this.tick);
+      this.tick = 0;
       this.link = link;
       const mesh = new MeshDevice(asMeshTransport(link));
       this.device = mesh;
@@ -200,14 +230,18 @@ export class RadioSession {
       }
       if (attempt !== this.attempt || this.userPaused) return;
       this.device = null;
-      this.scheduleRetry(bleMessage(error));
+      this.scheduleRetry(bleMessage(error), attempt);
     } finally {
-      if (attempt === this.attempt) this.connecting = false;
+      if (attempt === this.attempt) {
+        window.clearInterval(this.tick);
+        this.tick = 0;
+        this.connecting = false;
+      }
     }
   }
 
-  private scheduleRetry(hint?: string): void {
-    if (this.userPaused) return;
+  private scheduleRetry(hint: string | undefined, attempt: number): void {
+    if (this.userPaused || attempt !== this.attempt) return;
     window.clearTimeout(this.retryTimer);
     this.tries += 1;
     const problem = explainDrop(hint);
@@ -218,10 +252,9 @@ export class RadioSession {
     }
     this.hooks.onStatus("connecting", `Attempt ${this.tries} of 3 failed. ${problem.why}`, problem.fix);
     this.retryTimer = window.setTimeout(() => {
-      if (this.userPaused) return;
-      this.step("connecting", "Opening the radio again");
+      if (this.userPaused || attempt !== this.attempt || this.connecting || this.restoring) return;
       void this.restore();
-    }, 900);
+    }, 700);
   }
 
   private step(status: ConnectionStatus, action: string, note?: string): void {
@@ -437,7 +470,7 @@ export class RadioSession {
         this.hooks.onStatus("disconnected", "Not connected", "");
         return;
       }
-      this.scheduleRetry(reason);
+      this.scheduleRetry(reason, this.attempt);
     }
   }
 
@@ -838,6 +871,10 @@ function readSavedRadio(): { id: string; name: string } | null {
   } catch {
     return null;
   }
+}
+
+function wait(ms: number): Promise<void> {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
 
 function promiseTimeout<T>(work: Promise<T>, ms: number, label: string): Promise<T> {
