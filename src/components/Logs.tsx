@@ -5,6 +5,15 @@ import type { LogEntry } from "../types";
 
 type DirFilter = "all" | LogEntry["dir"];
 
+const NOISE = new Set(["Radio", "Node", "Config", "Channel", "Device log", "Queue", "Notice", "Connect", "Name", "Reboot"]);
+
+function isPacket(entry: LogEntry): boolean {
+  if (entry.dir === "sys" || NOISE.has(entry.kind)) return false;
+  if (entry.kind === "Position" && entry.summary.startsWith("Asked ")) return false;
+  if (entry.kind === "Traceroute" && entry.summary.startsWith("Tracing ")) return false;
+  return true;
+}
+
 export function Logs() {
   const mesh = useMesh();
   const [query, setQuery] = useState("");
@@ -16,6 +25,7 @@ export function Logs() {
   const filtered = useMemo(() => {
     const needle = query.trim().toLowerCase();
     return mesh.logs.filter((entry) => {
+      if (!isPacket(entry)) return false;
       if (dir !== "all" && entry.dir !== dir) return false;
       if (!needle) return true;
       return `${entry.kind} ${entry.summary}`.toLowerCase().includes(needle);
@@ -49,9 +59,9 @@ export function Logs() {
       <div className="log-tools">
         <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search the log" />
         <div className="filters" role="tablist">
-          {(["all", "rx", "tx", "sys"] as const).map((item) => (
+          {(["all", "rx", "tx"] as const).map((item) => (
             <button key={item} className={dir === item ? "chip current" : "chip"} onClick={() => setDir(item)}>
-              {item === "all" ? "All" : item === "rx" ? "Received" : item === "tx" ? "Sent" : "System"}
+              {item === "all" ? "All" : item === "rx" ? "Received" : "Sent"}
             </button>
           ))}
         </div>

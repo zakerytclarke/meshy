@@ -115,7 +115,7 @@ export class RadioSession {
       this.ble = match;
       await this.open(match);
     } catch (error) {
-      if (attempt === this.attempt && !this.userPaused) this.scheduleRetry(bleMessage(error));
+      if (attempt === this.attempt && !this.userPaused) this.scheduleRetry();
     } finally {
       this.restoring = false;
     }
@@ -183,12 +183,6 @@ export class RadioSession {
       this.ble = device;
       this.bind(mesh);
       this.hooks.onStatus("configuring", "Loading nodes and channels");
-      this.hooks.onLog({
-        dir: "sys",
-        kind: "Connect",
-        summary: "Bluetooth connected. Asking the radio for nodes, channels, and settings.",
-        detail: {},
-      });
       void mesh.configure().catch((error: unknown) => {
         if (this.device !== mesh) return;
         this.hooks.onBanner("error", error instanceof Error ? error.message : "The radio did not finish starting.");
@@ -196,17 +190,16 @@ export class RadioSession {
     } catch (error) {
       if (attempt !== this.attempt || this.userPaused) return;
       this.device = null;
-      this.scheduleRetry(bleMessage(error));
+      this.scheduleRetry();
     } finally {
       if (attempt === this.attempt) this.connecting = false;
     }
   }
 
-  private scheduleRetry(detail: string): void {
+  private scheduleRetry(): void {
     if (this.userPaused) return;
     window.clearTimeout(this.retryTimer);
     this.hooks.onStatus("connecting", "Reconnecting");
-    this.hooks.onLog({ dir: "sys", kind: "Connect", summary: `Radio link dropped. Retrying. ${detail}`, detail: {} });
     const wait = this.retryDelay;
     this.retryDelay = Math.min(this.retryDelay * 2, 15000);
     this.retryTimer = window.setTimeout(() => {
@@ -226,12 +219,6 @@ export class RadioSession {
       }
       const detail = routingLabel(parsed.error);
       this.hooks.onDelivery(parsed.id, "failed", { detail });
-      this.hooks.onLog({
-        dir: "sys",
-        kind: "Routing",
-        summary: detail,
-        detail: parsed,
-      });
     }
   }
 
@@ -270,12 +257,6 @@ export class RadioSession {
         pskBase64: bytesToBase64(spec.psk),
       };
       this.hooks.onChannel(record);
-      this.hooks.onLog({
-        dir: "tx",
-        kind: "Channel",
-        summary: `Added channel ${label}.`,
-        detail: { index, name: label, pskBase64: record.pskBase64 },
-      });
       added.push(`${label} (${record.pskBase64})`);
     }
     return added.join(", ");
@@ -286,12 +267,6 @@ export class RadioSession {
     if (index === 0) throw new Error("The primary channel stays on the radio.");
     await device.clearChannel(index);
     this.hooks.onChannel({ index, role: "disabled", name: "", pskBase64: "" });
-    this.hooks.onLog({
-      dir: "tx",
-      kind: "Channel",
-      summary: `Removed channel ${index}.`,
-      detail: { index },
-    });
   }
 
   async saveName(longName: string, shortName: string): Promise<void> {
@@ -314,24 +289,16 @@ export class RadioSession {
       longName: user.longName,
       shortName: user.shortName,
     });
-    this.hooks.onLog({
-      dir: "tx",
-      kind: "Name",
-      summary: `Set radio name to ${user.longName} (${user.shortName}).`,
-      detail: { longName: user.longName, shortName: user.shortName },
-    });
   }
 
   async reboot(): Promise<void> {
     const device = this.requireDevice();
-    this.hooks.onLog({ dir: "tx", kind: "Reboot", summary: "Rebooting the radio.", detail: {} });
     await device.reboot(3);
   }
 
   requestPosition(num: number): void {
     const device = this.requireDevice();
     const who = nodeName(this.hooks.getNodes(), num, this.hooks.getMyNum());
-    this.hooks.onLog({ dir: "tx", kind: "Position", summary: `Asked ${who} for a location.`, detail: { num } });
     void device.requestPosition(num).catch((error: unknown) => {
       this.hooks.onBanner("error", error instanceof Error ? error.message : `${who} did not answer the location request.`);
     });
@@ -340,12 +307,6 @@ export class RadioSession {
   traceRoute(num: number): void {
     const device = this.requireDevice();
     const who = nodeName(this.hooks.getNodes(), num, this.hooks.getMyNum());
-    this.hooks.onLog({
-      dir: "tx",
-      kind: "Traceroute",
-      summary: `Tracing the path to ${who}.`,
-      detail: { num },
-    });
     void device.traceRoute(num).catch((error: unknown) => {
       this.hooks.onBanner("error", error instanceof Error ? error.message : `No path to ${who}.`);
     });
@@ -417,17 +378,20 @@ export class RadioSession {
         this.hooks.onStatus("disconnected", "Not connected");
         return;
       }
-      this.scheduleRetry("The Bluetooth link closed.");
+      this.scheduleRetry();
     }
   }
 
   private onFromRadio(message: Protobuf.Mesh.FromRadio): void {
-    const described = describeFromRadio(message, this.hooks.getNodes(), this.hooks.getMyNum());
+    if (message.payloadVariant.case !== "packet") return;
+    const packet = message.payloadVariant.value;
+    const described = describeMesh(packet, this.hooks.getNodes(), this.hooks.getMyNum());
+    const mine = this.hooks.getMyNum() !== 0 && packet.from === this.hooks.getMyNum();
     this.hooks.onLog({
-      dir: "rx",
+      dir: mine ? "tx" : "rx",
       kind: described.kind,
       summary: described.summary,
-      detail: toDetail(message),
+      detail: toDetail(packet),
     });
   }
 
@@ -457,14 +421,6 @@ export class RadioSession {
       rssi: mine ? undefined : rf.rssi,
       hops: mine ? null : (rf.hops ?? null),
     });
-    if (mine) {
-      this.hooks.onLog({
-        dir: "tx",
-        kind: "Text",
-        summary: `You sent: ${clip(packet.data)}`,
-        detail: toDetail(packet),
-      });
-    }
   }
 
   private onNodeInfo(info: Protobuf.Mesh.NodeInfo): void {
@@ -717,46 +673,6 @@ function portLabel(port: number | undefined): string {
   if (port === PORT.NEIGHBORINFO_APP) return "Neighbors";
   if (port === PORT.ADMIN_APP) return "Admin";
   return enumLabel(PORT, port) ?? "Packet";
-}
-
-function describeFromRadio(
-  message: Protobuf.Mesh.FromRadio,
-  nodes: NodeRecord[],
-  myNum: number,
-): { kind: string; summary: string } {
-  const variant = message.payloadVariant;
-  switch (variant.case) {
-    case "packet":
-      return describeMesh(variant.value, nodes, myNum);
-    case "myInfo":
-      return { kind: "Radio", summary: `This radio is ${nodeIdFrom(variant.value.myNodeNum)}.` };
-    case "nodeInfo": {
-      const who = variant.value.user?.longName || nodeName(nodes, variant.value.num, myNum);
-      return { kind: "Node", summary: `Node record for ${who}.` };
-    }
-    case "config":
-      return { kind: "Config", summary: `Config: ${variant.value.payloadVariant.case ?? "unknown"}.` };
-    case "moduleConfig":
-      return { kind: "Config", summary: `Module: ${variant.value.payloadVariant.case ?? "unknown"}.` };
-    case "channel": {
-      const name = variant.value.settings?.name || `Channel ${variant.value.index}`;
-      return { kind: "Channel", summary: `Channel ${variant.value.index}: ${name}.` };
-    }
-    case "logRecord":
-      return { kind: "Device log", summary: variant.value.message || "Device log." };
-    case "configCompleteId":
-      return { kind: "Radio", summary: "Radio finished sending its setup." };
-    case "metadata":
-      return { kind: "Radio", summary: `Firmware ${variant.value.firmwareVersion}.` };
-    case "clientNotification":
-      return { kind: "Notice", summary: variant.value.message || "Notice from the radio." };
-    case "queueStatus":
-      return { kind: "Queue", summary: "Transmit queue updated." };
-    case "rebooted":
-      return { kind: "Radio", summary: "Radio rebooted." };
-    default:
-      return { kind: variant.case ?? "Event", summary: variant.case ?? "Radio event." };
-  }
 }
 
 function describeMesh(
