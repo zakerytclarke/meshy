@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import L from "leaflet";
 import { formatAgo, hopCount, nodeName, shortName, escapeHtml } from "../lib/format";
-import { blockIndex, cellEdges, colorForScore, displayOrigin, displayStep, heardScore, judge, presentedCell, spanCorners } from "../lib/signal";
+import { blockIndex, cellEdges, colorForScore, combineCoverage, displayOrigin, displayStep, heardScore, presentedCell, spanCorners } from "../lib/signal";
 import { BROADCAST_NUM, type NodeRecord, type SignalCell } from "../types";
 import { useMesh } from "../state/MeshProvider";
 
@@ -335,44 +335,31 @@ class SignalGrid extends L.Layer {
     if (!context) return;
     context.setTransform(ratio, 0, 0, ratio, 0, 0);
     context.clearRect(0, 0, width, height);
-    const best = new Map<string, SignalCell>();
+    const samples = new Map<string, { x: number; y: number; signal?: number }>();
     for (const cell of Object.values(this.getCells())) {
       const block = cellBlock(cell);
       if (!block) continue;
       const parent = displayOrigin(block.x, block.y, step);
       if (parent.x < x0 || parent.x > x1 || parent.y < y0 || parent.y > y1) continue;
       const shown = presentedCell(cell);
-      const key = `${parent.x}:${parent.y}`;
-      const current = best.get(key);
-      if (!current || preferCell(shown, current)) best.set(key, shown);
+      const key = `${block.x}:${block.y}`;
+      const current = samples.get(key);
+      const signal = shown.contact ? shown.score : undefined;
+      if (!current) {
+        samples.set(key, { x: block.x, y: block.y, signal });
+      } else if (signal != null) {
+        current.signal = current.signal == null ? signal : (current.signal + signal) / 2;
+      }
     }
     const mine = this.getMyNum();
     for (const node of this.getNodes()) {
       if (node.num === mine || node.viaMqtt || node.lat == null || node.lng == null) continue;
       const block = blockIndex(node.lat, node.lng);
-      const parent = displayOrigin(block.x, block.y, step);
-      if (parent.x < x0 || parent.x > x1 || parent.y < y0 || parent.y > y1) continue;
-      const hops = node.hopsAway ?? null;
-      const judged = judge({ hops, snr: node.snr, rssi: node.rssi });
-      const shown: SignalCell = {
-        key: `b:${parent.x}:${parent.y}`,
-        latIndex: parent.x,
-        lngIndex: parent.y,
-        reach: judged.reach,
-        score: heardScore({ hops, snr: node.snr, rssi: node.rssi }),
-        contact: true,
-        snr: node.snr,
-        rssi: node.rssi,
-        hops,
-        rx: 0,
-        tx: 0,
-        updated: node.lastHeard ?? 0,
-        note: "",
-      };
-      const key = `${parent.x}:${parent.y}`;
-      const current = best.get(key);
-      if (!current || preferCell(shown, current)) best.set(key, shown);
+      const sample = samples.get(`${block.x}:${block.y}`);
+      if (!sample || sample.signal != null) continue;
+      sample.signal = heardScore({ hops: node.hopsAway ?? null, snr: node.snr, rssi: node.rssi });
     }
+    const best = combineCoverage([...samples.values()], step);
     if (drawGrid) {
       context.strokeStyle = "rgba(28, 40, 34, 0.4)";
       context.lineWidth = 1;
@@ -392,7 +379,7 @@ class SignalGrid extends L.Layer {
       const [ix, iy] = key.split(":").map(Number);
       const left = (((ix || 0) - x0) / step) * side;
       const top = (((iy || 0) - y0) / step) * side;
-      const dim = (filter === "node" && cell.reach !== "node") || (filter === "mesh" && cell.reach !== "mesh");
+      const dim = filter !== "all" && !cell.contact;
       context.globalAlpha = dim ? 0.12 : cell.contact ? 0.38 : 0.72;
       context.fillStyle = cell.contact ? colorForScore(cell.score) : "rgb(138, 144, 140)";
       context.fillRect(left, top, side, side);
@@ -485,11 +472,6 @@ function describeSquare(
       ? `About ${meters >= 10000 ? Math.round(meters / 1000) : (meters / 1000).toFixed(1)} km across.`
       : `About ${meters} m across.`;
   return { nodes: list, across };
-}
-
-function preferCell(next: SignalCell, current: SignalCell): boolean {
-  if (Boolean(next.contact) !== Boolean(current.contact)) return Boolean(next.contact);
-  return next.score > current.score;
 }
 
 function cellBlock(cell: SignalCell): { x: number; y: number } | null {

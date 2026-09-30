@@ -144,6 +144,40 @@ export function heardScore(input: { snr?: number; rssi?: number; hops: number | 
   return judge(input).score;
 }
 
+export interface CoverageSample {
+  x: number;
+  y: number;
+  /** Missing when the block was visited and no signal was heard there. */
+  signal?: number;
+}
+
+/**
+ * A combined square is empty when nobody has been inside it.
+ * It is grey when every visited block was silent, and the average signal
+ * when any block inside it heard a message.
+ */
+export function combineCoverage(samples: CoverageSample[], step: number): Map<string, { contact: boolean; score: number }> {
+  const groups = new Map<string, { signals: number[]; visits: number }>();
+  for (const sample of samples) {
+    const parent = displayOrigin(sample.x, sample.y, step);
+    const key = `${parent.x}:${parent.y}`;
+    const group = groups.get(key) ?? { signals: [], visits: 0 };
+    if (sample.signal == null) group.visits += 1;
+    else group.signals.push(sample.signal);
+    groups.set(key, group);
+  }
+  const combined = new Map<string, { contact: boolean; score: number }>();
+  for (const [key, group] of groups) {
+    if (group.signals.length > 0) {
+      const score = group.signals.reduce((sum, value) => sum + value, 0) / group.signals.length;
+      combined.set(key, { contact: true, score });
+    } else if (group.visits > 0) {
+      combined.set(key, { contact: false, score: 0 });
+    }
+  }
+  return combined;
+}
+
 /** Older squares kept the heard node after a later visit cleared the color. */
 export function presentedCell(cell: SignalCell): SignalCell {
   if (!cellShowsTraffic(cell)) return cell;
