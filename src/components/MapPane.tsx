@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import L from "leaflet";
 import { formatAgo, hopCount, nodeName, shortName, escapeHtml } from "../lib/format";
-import { blockIndex, cellEdges, colorForScore, displayOrigin, displayStep, spanCorners } from "../lib/signal";
+import { blockIndex, cellEdges, colorForScore, displayOrigin, displayStep, presentedCell, spanCorners } from "../lib/signal";
 import { BROADCAST_NUM, type NodeRecord, type SignalCell } from "../types";
 import { useMesh } from "../state/MeshProvider";
 
@@ -327,26 +327,30 @@ class SignalGrid extends L.Layer {
     if (!context) return;
     context.setTransform(ratio, 0, 0, ratio, 0, 0);
     context.clearRect(0, 0, width, height);
-    if (drawGrid) {
-      context.strokeStyle = "rgba(28, 40, 34, 0.28)";
-      context.lineWidth = 1;
-      for (let iy = y0; iy <= y1; iy += step) {
-        for (let ix = x0; ix <= x1; ix += step) {
-          const left = ((ix - x0) / step) * side;
-          const top = ((iy - y0) / step) * side;
-          context.strokeRect(left + 0.5, top + 0.5, side - 1, side - 1);
-        }
-      }
-    }
     const best = new Map<string, SignalCell>();
     for (const cell of Object.values(this.getCells())) {
       const block = cellBlock(cell);
       if (!block) continue;
       const parent = displayOrigin(block.x, block.y, step);
       if (parent.x < x0 || parent.x > x1 || parent.y < y0 || parent.y > y1) continue;
+      const shown = presentedCell(cell);
       const key = `${parent.x}:${parent.y}`;
       const current = best.get(key);
-      if (!current || preferCell(cell, current)) best.set(key, cell);
+      if (!current || preferCell(shown, current)) best.set(key, shown);
+    }
+    if (drawGrid) {
+      context.strokeStyle = "rgba(28, 40, 34, 0.4)";
+      context.lineWidth = 1;
+      context.setLineDash([5, 6]);
+      for (let iy = y0; iy <= y1; iy += step) {
+        for (let ix = x0; ix <= x1; ix += step) {
+          if (best.has(`${ix}:${iy}`)) continue;
+          const left = ((ix - x0) / step) * side;
+          const top = ((iy - y0) / step) * side;
+          context.strokeRect(left + 0.5, top + 0.5, side - 1, side - 1);
+        }
+      }
+      context.setLineDash([]);
     }
     const filter = this.getFilter();
     for (const [key, cell] of best) {

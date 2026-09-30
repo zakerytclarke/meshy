@@ -590,15 +590,11 @@ export class RadioSession {
     text?: string,
   ): void {
     const message = Boolean(text) || label === "Text";
-    if (remote != null) {
-      const point = this.pointFor(remote);
-      if (point) this.markVisited([point]);
-    }
-    if (!includeSelf) return;
-    const self = this.selfPoint();
-    if (!self) return;
+    const remotePoint = remote != null ? this.pointFor(remote) : null;
+    const self = includeSelf ? this.selfPoint() : null;
     if (!message) {
-      this.markVisited([self]);
+      const visits = [remotePoint, self].filter((point): point is { lat: number; lng: number } => point != null);
+      this.markVisited(visits);
       return;
     }
     const event =
@@ -606,8 +602,12 @@ export class RadioSession {
         ? { time: Date.now(), num: remote, hops, label, text: text ? clip(text) : undefined }
         : undefined;
     const heard = remote != null && remote !== this.hooks.getMyNum() ? [remote] : undefined;
+    const points = [remotePoint, self]
+      .filter((point): point is { lat: number; lng: number } => point != null)
+      .map((point) => ({ ...point, heard, event }));
+    if (points.length === 0) return;
     this.hooks.onObservation({
-      points: [{ ...self, heard, event }],
+      points,
       snr,
       rssi,
       hops,

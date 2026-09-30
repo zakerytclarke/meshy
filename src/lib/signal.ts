@@ -129,6 +129,21 @@ export function colorForScore(score: number): string {
   return `rgb(${channel(0)} ${channel(1)} ${channel(2)})`;
 }
 
+export function cellShowsTraffic(cell: SignalCell | undefined): boolean {
+  if (!cell) return false;
+  if (cell.contact) return true;
+  return Boolean(cell.history?.some((event) => event.label === "Text" || event.text));
+}
+
+/** Older squares kept the message in history after a later visit cleared the color. */
+export function presentedCell(cell: SignalCell): SignalCell {
+  if (!cellShowsTraffic(cell)) return cell;
+  if (cell.contact && cell.reach !== "visited" && cell.score > 0) return { ...cell, contact: true };
+  const hops = cell.hops ?? cell.history?.find((event) => event.hops != null)?.hops ?? null;
+  const judged = judge({ hops, snr: cell.snr, rssi: cell.rssi });
+  return { ...cell, contact: true, reach: judged.reach, score: judged.score };
+}
+
 export function reachTitle(cell: Pick<SignalCell, "reach" | "hops">): string {
   if (cell.reach === "miss") return "No node answered";
   if (cell.reach === "mesh" && cell.hops != null && cell.hops >= 2) return "Traveled the mesh";
@@ -150,7 +165,7 @@ export function paintCells(prev: Record<string, SignalCell>, observation: Observ
     seen.add(key);
     const existing = next[key];
     if (!observation.contact) {
-      if (existing?.contact) continue;
+      if (cellShowsTraffic(existing)) continue;
       next[key] = {
         key,
         latIndex,
