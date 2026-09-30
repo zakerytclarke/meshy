@@ -129,19 +129,28 @@ export function colorForScore(score: number): string {
   return `rgb(${channel(0)} ${channel(1)} ${channel(2)})`;
 }
 
+/** A square that lists a heard node should take a signal color, not stay grey. */
 export function cellShowsTraffic(cell: SignalCell | undefined): boolean {
   if (!cell) return false;
   if (cell.contact) return true;
-  return Boolean(cell.history?.some((event) => event.label === "Text" || event.text));
+  if (cell.heard && cell.heard.length > 0) return true;
+  return Boolean(cell.history && cell.history.length > 0);
 }
 
-/** Older squares kept the message in history after a later visit cleared the color. */
+/** Color from SNR when we have it, otherwise from how far the packet traveled. */
+export function heardScore(input: { snr?: number; rssi?: number; hops: number | null }): number {
+  if (typeof input.snr === "number" && !Number.isNaN(input.snr)) return signalUnit(input.snr, input.rssi);
+  if (typeof input.rssi === "number" && input.rssi !== 0) return signalUnit(undefined, input.rssi);
+  return judge(input).score;
+}
+
+/** Older squares kept the heard node after a later visit cleared the color. */
 export function presentedCell(cell: SignalCell): SignalCell {
   if (!cellShowsTraffic(cell)) return cell;
-  if (cell.contact && cell.reach !== "visited" && cell.score > 0) return { ...cell, contact: true };
   const hops = cell.hops ?? cell.history?.find((event) => event.hops != null)?.hops ?? null;
+  const score = heardScore({ hops, snr: cell.snr, rssi: cell.rssi });
   const judged = judge({ hops, snr: cell.snr, rssi: cell.rssi });
-  return { ...cell, contact: true, reach: judged.reach, score: judged.score };
+  return { ...cell, contact: true, reach: cell.reach === "visited" ? judged.reach : cell.reach, score };
 }
 
 export function reachTitle(cell: Pick<SignalCell, "reach" | "hops">): string {

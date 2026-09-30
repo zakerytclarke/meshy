@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import L from "leaflet";
 import { formatAgo, hopCount, nodeName, shortName, escapeHtml } from "../lib/format";
-import { blockIndex, cellEdges, colorForScore, displayOrigin, displayStep, presentedCell, spanCorners } from "../lib/signal";
+import { blockIndex, cellEdges, colorForScore, displayOrigin, displayStep, heardScore, judge, presentedCell, spanCorners } from "../lib/signal";
 import { BROADCAST_NUM, type NodeRecord, type SignalCell } from "../types";
 import { useMesh } from "../state/MeshProvider";
 
@@ -13,6 +13,8 @@ export function MapPane({ active }: { active: boolean }) {
   const mapRef = useRef<L.Map | null>(null);
   const gridRef = useRef<SignalGrid | null>(null);
   const cellsRef = useRef(mesh.cells);
+  const nodesRef = useRef(mesh.nodes);
+  const myNumRef = useRef(mesh.myNodeNum);
   const filterRef = useRef<ReachFilter>("all");
   const selectedRef = useRef<{ lat: number; lng: number } | null>(null);
   const skipClick = useRef(false);
@@ -22,6 +24,8 @@ export function MapPane({ active }: { active: boolean }) {
   const [zoom, setZoom] = useState(3);
   const [mapReady, setMapReady] = useState(false);
   cellsRef.current = mesh.cells;
+  nodesRef.current = mesh.nodes;
+  myNumRef.current = mesh.myNodeNum;
   selectedRef.current = selectedAt;
 
   useEffect(() => {
@@ -35,6 +39,8 @@ export function MapPane({ active }: { active: boolean }) {
     }).addTo(map);
     const grid = new SignalGrid(
       () => cellsRef.current,
+      () => nodesRef.current,
+      () => myNumRef.current,
       () => filterRef.current,
       () => selectedRef.current,
     );
@@ -77,7 +83,7 @@ export function MapPane({ active }: { active: boolean }) {
 
   useEffect(() => {
     gridRef.current?.redraw();
-  }, [mesh.cells, active, selectedAt, zoom]);
+  }, [mesh.cells, mesh.nodes, mesh.myNodeNum, active, selectedAt, zoom]);
 
   const radioFix = mesh.nodes.find((node) => node.num === mesh.myNodeNum && node.lat != null && node.lng != null);
   const browserFix = mesh.browserFix;
@@ -267,6 +273,8 @@ class SignalGrid extends L.Layer {
 
   constructor(
     private readonly getCells: () => Record<string, SignalCell>,
+    private readonly getNodes: () => NodeRecord[],
+    private readonly getMyNum: () => number,
     private readonly getFilter: () => ReachFilter,
     private readonly getSelected: () => { lat: number; lng: number } | null,
   ) {
@@ -334,6 +342,33 @@ class SignalGrid extends L.Layer {
       const parent = displayOrigin(block.x, block.y, step);
       if (parent.x < x0 || parent.x > x1 || parent.y < y0 || parent.y > y1) continue;
       const shown = presentedCell(cell);
+      const key = `${parent.x}:${parent.y}`;
+      const current = best.get(key);
+      if (!current || preferCell(shown, current)) best.set(key, shown);
+    }
+    const mine = this.getMyNum();
+    for (const node of this.getNodes()) {
+      if (node.num === mine || node.viaMqtt || node.lat == null || node.lng == null) continue;
+      const block = blockIndex(node.lat, node.lng);
+      const parent = displayOrigin(block.x, block.y, step);
+      if (parent.x < x0 || parent.x > x1 || parent.y < y0 || parent.y > y1) continue;
+      const hops = node.hopsAway ?? null;
+      const judged = judge({ hops, snr: node.snr, rssi: node.rssi });
+      const shown: SignalCell = {
+        key: `b:${parent.x}:${parent.y}`,
+        latIndex: parent.x,
+        lngIndex: parent.y,
+        reach: judged.reach,
+        score: heardScore({ hops, snr: node.snr, rssi: node.rssi }),
+        contact: true,
+        snr: node.snr,
+        rssi: node.rssi,
+        hops,
+        rx: 0,
+        tx: 0,
+        updated: node.lastHeard ?? 0,
+        note: "",
+      };
       const key = `${parent.x}:${parent.y}`;
       const current = best.get(key);
       if (!current || preferCell(shown, current)) best.set(key, shown);
