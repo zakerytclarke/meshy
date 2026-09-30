@@ -104,9 +104,9 @@ export class RadioSession {
     if (!saved) return;
     const attempt = this.attempt;
     this.restoring = true;
-    this.hooks.onStatus("connecting", `Reconnecting to ${saved.name}`);
+    this.hooks.onStatus("connecting", `Opening ${saved.name}`);
     try {
-      const devices = await navigator.bluetooth.getDevices();
+      const devices = await promiseTimeout(navigator.bluetooth.getDevices(), 8000, "The phone did not list the radio.");
       if (attempt !== this.attempt || this.userPaused || this.device) return;
       const match = devices.find((device) => device.id === saved.id);
       if (!match) {
@@ -116,7 +116,7 @@ export class RadioSession {
       this.ble = match;
       await this.open(match);
     } catch (error) {
-      if (attempt === this.attempt && !this.userPaused) this.scheduleRetry();
+      if (attempt === this.attempt && !this.userPaused) this.scheduleRetry(bleMessage(error));
     } finally {
       this.restoring = false;
     }
@@ -172,15 +172,8 @@ export class RadioSession {
     window.clearTimeout(this.retryTimer);
     this.connecting = true;
     this.userPaused = false;
-    this.hooks.onStatus("connecting", `Reconnecting to ${device.name || readSavedRadio()?.name || "radio"}`);
+    this.hooks.onStatus("connecting", `Opening ${device.name || readSavedRadio()?.name || "the radio"}`);
     try {
-      // Android keeps a dead GATT session after a drop. Close it and let the
-      // stack settle before opening the radio again.
-      if (device.gatt?.connected) {
-        device.gatt.disconnect();
-        await new Promise((resolve) => window.setTimeout(resolve, 600));
-        if (attempt !== this.attempt || this.userPaused) return;
-      }
       const link = await RadioBluetooth.createFromDevice(device);
       if (attempt !== this.attempt || this.userPaused) {
         void link.disconnect();
@@ -196,20 +189,27 @@ export class RadioSession {
         this.hooks.onBanner("error", error instanceof Error ? error.message : "The radio did not finish starting.");
       });
     } catch (error) {
+      try {
+        device.gatt?.disconnect();
+      } catch {
+        /* The phone may already have dropped the radio. */
+      }
       if (attempt !== this.attempt || this.userPaused) return;
       this.device = null;
-      this.scheduleRetry();
+      this.scheduleRetry(bleMessage(error));
     } finally {
       if (attempt === this.attempt) this.connecting = false;
     }
   }
 
-  private scheduleRetry(): void {
+  private scheduleRetry(hint?: string): void {
     if (this.userPaused) return;
     window.clearTimeout(this.retryTimer);
-    this.hooks.onStatus("connecting", "Reconnecting");
     const wait = this.retryDelay;
     this.retryDelay = Math.min(this.retryDelay * 2, 15000);
+    const seconds = Math.max(1, Math.round(wait / 1000));
+    const why = hint ? `${hint} ` : "";
+    this.hooks.onStatus("connecting", `${why}Trying again in ${seconds}s`);
     this.retryTimer = window.setTimeout(() => {
       void this.restore();
     }, wait);
@@ -411,7 +411,7 @@ export class RadioSession {
       return;
     }
     if (status === 4 || status === 3) {
-      this.hooks.onStatus("connecting", "Reconnecting");
+      this.hooks.onStatus("connecting", "Opening the radio");
       return;
     }
     if (status === 2) {
@@ -421,7 +421,7 @@ export class RadioSession {
         this.hooks.onStatus("disconnected", "Not connected");
         return;
       }
-      this.scheduleRetry();
+      this.scheduleRetry("The radio dropped the link.");
     }
   }
 
@@ -790,6 +790,22 @@ function readSavedRadio(): { id: string; name: string } | null {
   } catch {
     return null;
   }
+}
+
+function promiseTimeout<T>(work: Promise<T>, ms: number, label: string): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = window.setTimeout(() => reject(new Error(label)), ms);
+    work.then(
+      (value) => {
+        window.clearTimeout(timer);
+        resolve(value);
+      },
+      (error) => {
+        window.clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
 }
 
 function bleMessage(error: unknown): string {

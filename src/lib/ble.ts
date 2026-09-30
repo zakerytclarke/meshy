@@ -31,7 +31,23 @@ function copyView(view: DataView): Uint8Array {
 
 function gattBusy(error: unknown): boolean {
   const message = error instanceof Error ? `${error.name} ${error.message}` : String(error);
-  return /in progress|GATT operation/i.test(message);
+  return /already in progress/i.test(message);
+}
+
+function withTimeout<T>(work: Promise<T>, ms: number, label: string): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = window.setTimeout(() => reject(new Error(label)), ms);
+    work.then(
+      (value) => {
+        window.clearTimeout(timer);
+        resolve(value);
+      },
+      (error) => {
+        window.clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
 }
 
 export class RadioBluetooth {
@@ -48,15 +64,24 @@ export class RadioBluetooth {
   private reading = false;
   private needsRead = false;
   private dead = false;
+  private busyRetries = 0;
   private turn: Promise<void> = Promise.resolve();
 
   static async createFromDevice(device: BluetoothDevice): Promise<RadioBluetooth> {
-    const server = await device.gatt?.connect();
+    const server = await withTimeout(
+      device.gatt?.connect() ?? Promise.reject(new Error("The radio did not open a Bluetooth connection.")),
+      10000,
+      "The radio did not answer. Move closer and try again.",
+    );
     if (!server) throw new Error("The radio did not open a Bluetooth connection.");
-    const service = await server.getPrimaryService(RadioBluetooth.ServiceUuid);
-    const toRadio = await service.getCharacteristic(RadioBluetooth.ToRadioUuid);
-    const fromRadio = await service.getCharacteristic(RadioBluetooth.FromRadioUuid);
-    const fromNum = await service.getCharacteristic(RadioBluetooth.FromNumUuid);
+    const service = await withTimeout(
+      server.getPrimaryService(RadioBluetooth.ServiceUuid),
+      8000,
+      "The radio did not answer. Move closer and try again.",
+    );
+    const toRadio = await withTimeout(service.getCharacteristic(RadioBluetooth.ToRadioUuid), 8000, "The radio did not answer.");
+    const fromRadio = await withTimeout(service.getCharacteristic(RadioBluetooth.FromRadioUuid), 8000, "The radio did not answer.");
+    const fromNum = await withTimeout(service.getCharacteristic(RadioBluetooth.FromNumUuid), 8000, "The radio did not answer.");
     return new RadioBluetooth(toRadio, fromRadio, fromNum, server);
   }
 
@@ -72,13 +97,19 @@ export class RadioBluetooth {
         this.emitStatus(Status.DeviceConnecting);
         this.gattServer.device.addEventListener("gattserverdisconnected", this.onGattDisconnected);
         try {
-          await this.fromNumCharacteristic.startNotifications();
+          await withTimeout(this.fromNumCharacteristic.startNotifications(), 8000, "The radio did not start sending.");
           this.fromNumCharacteristic.addEventListener("characteristicvaluechanged", this.onFromNumChanged);
           this.emitStatus(Status.DeviceConnected);
           void this.readFromRadio();
         } catch {
+          this.dead = true;
           this.emitStatus(Status.DeviceDisconnected, "notify-failed");
           this.gattServer.device.removeEventListener("gattserverdisconnected", this.onGattDisconnected);
+          try {
+            this.gattServer.disconnect();
+          } catch {
+            /* Already closed. */
+          }
         }
       },
     });
@@ -86,7 +117,7 @@ export class RadioBluetooth {
       write: async (chunk) => {
         try {
           await this.runTurn(async () => {
-            await this.toRadioCharacteristic.writeValue(toArrayBuffer(chunk));
+            await withTimeout(this.toRadioCharacteristic.writeValue(toArrayBuffer(chunk)), 8000, "The radio did not accept a packet.");
           });
           this.needsRead = true;
           void this.readFromRadio();
@@ -152,22 +183,23 @@ export class RadioBluetooth {
     if (this.reading || this.closingByUser || this.dead) return;
     this.reading = true;
     try {
-      while (!this.closingByUser) {
+      while (!this.closingByUser && !this.dead) {
         this.needsRead = false;
         try {
-          await this.runTurn(() => this.drain());
+          const more = await this.pull();
+          this.busyRetries = 0;
+          if (!more && !this.needsRead) return;
         } catch (error) {
-          if (this.closingByUser) return;
-          if (gattBusy(error)) {
-            await wait(40);
+          if (this.closingByUser || this.dead) return;
+          if (gattBusy(error) && this.busyRetries < 4) {
+            this.busyRetries += 1;
+            await wait(50);
             this.needsRead = true;
             continue;
           }
-          this.dead = true;
-          this.emitStatus(Status.DeviceDisconnected, "read-error");
+          this.fail("read-error");
           return;
         }
-        if (!this.needsRead) return;
       }
     } finally {
       this.reading = false;
@@ -175,12 +207,25 @@ export class RadioBluetooth {
     }
   }
 
-  private async drain(): Promise<void> {
-    for (;;) {
-      const value = await this.fromRadioCharacteristic.readValue();
-      if (value.byteLength === 0) return;
-      this.enqueue({ type: "packet", data: copyView(value) });
-      await wait(ANDROID ? 12 : 0);
+  /** Read one queued packet, then let a waiting write take a turn. */
+  private async pull(): Promise<boolean> {
+    const value = await this.runTurn(() =>
+      withTimeout(this.fromRadioCharacteristic.readValue(), 8000, "The radio stopped answering."),
+    );
+    if (value.byteLength === 0) return false;
+    this.enqueue({ type: "packet", data: copyView(value) });
+    if (ANDROID) await wait(8);
+    return true;
+  }
+
+  private fail(reason: string): void {
+    if (this.dead) return;
+    this.dead = true;
+    this.emitStatus(Status.DeviceDisconnected, reason);
+    try {
+      this.gattServer.disconnect();
+    } catch {
+      /* Already closed. */
     }
   }
 

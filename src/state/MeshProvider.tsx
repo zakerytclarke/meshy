@@ -181,7 +181,7 @@ export function MeshProvider({ children }: { children: ReactNode }) {
       getChannels: () => stateRef.current.channels,
       getMyNum: () => stateRef.current.myNodeNum,
       getSelfPoint: () => selfPoint(stateRef.current),
-      onStatus: (status, detail) => commit((current) => ({ ...current, status, statusDetail: detail })),
+      onStatus: (status, detail) => commit((current) => ({ ...current, status, statusDetail: detail }), true),
       onBanner: (tone, text) => commit((current) => ({ ...current, banner: { tone, text }, busy: null })),
       onMyNode: (num) => commit((current) => ({ ...current, myNodeNum: num })),
       onNode: (patch) => commit((current) => ({ ...current, nodes: mergeNode(current.nodes, patch) })),
@@ -212,13 +212,21 @@ export function MeshProvider({ children }: { children: ReactNode }) {
     });
   }
 
-  function commit(recipe: (current: AppState) => AppState) {
-    const next = recipe(stateRef.current);
-    stateRef.current = next;
-    // The node download arrives as hundreds of separate Bluetooth events.
-    // Painting each one freezes the phone and the radio drops the link.
-    window.clearTimeout(paintTimer.current);
-    paintTimer.current = window.setTimeout(() => setState(stateRef.current), 80);
+  function commit(recipe: (current: AppState) => AppState, immediate = false) {
+    stateRef.current = recipe(stateRef.current);
+    if (immediate) {
+      window.clearTimeout(paintTimer.current);
+      paintTimer.current = 0;
+      setState(stateRef.current);
+      return;
+    }
+    // Node packets arrive in a burst. Paint on a steady cadence so the phone
+    // can keep servicing Bluetooth, and so a burst cannot postpone the paint forever.
+    if (paintTimer.current) return;
+    paintTimer.current = window.setTimeout(() => {
+      paintTimer.current = 0;
+      setState(stateRef.current);
+    }, 80);
   }
 
   useEffect(() => {
