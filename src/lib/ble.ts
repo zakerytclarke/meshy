@@ -10,7 +10,6 @@ import { Types } from "@meshtastic/core";
  */
 
 const Status = Types.DeviceStatusEnum;
-const ANDROID = typeof navigator !== "undefined" && /Android/i.test(navigator.userAgent);
 
 function wait(ms: number): Promise<void> {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
@@ -34,22 +33,6 @@ function gattBusy(error: unknown): boolean {
   return /already in progress/i.test(message);
 }
 
-function withTimeout<T>(work: Promise<T>, ms: number, label: string): Promise<T> {
-  return new Promise((resolve, reject) => {
-    const timer = window.setTimeout(() => reject(new Error(label)), ms);
-    work.then(
-      (value) => {
-        window.clearTimeout(timer);
-        resolve(value);
-      },
-      (error) => {
-        window.clearTimeout(timer);
-        reject(error);
-      },
-    );
-  });
-}
-
 export class RadioBluetooth {
   static readonly ToRadioUuid = "f75c76d2-129e-4dad-a1dd-7866124401e7";
   static readonly FromRadioUuid = "2c55e69e-4993-11ed-b878-0242ac120002";
@@ -70,20 +53,12 @@ export class RadioBluetooth {
   private turn: Promise<void> = Promise.resolve();
 
   static async createFromDevice(device: BluetoothDevice): Promise<RadioBluetooth> {
-    const server = await withTimeout(
-      device.gatt?.connect() ?? Promise.reject(new Error("The radio did not open a Bluetooth connection.")),
-      10000,
-      "The radio did not answer. Move closer and try again.",
-    );
+    const server = await device.gatt?.connect();
     if (!server) throw new Error("The radio did not open a Bluetooth connection.");
-    const service = await withTimeout(
-      server.getPrimaryService(RadioBluetooth.ServiceUuid),
-      8000,
-      "The radio did not answer. Move closer and try again.",
-    );
-    const toRadio = await withTimeout(service.getCharacteristic(RadioBluetooth.ToRadioUuid), 8000, "The radio did not answer.");
-    const fromRadio = await withTimeout(service.getCharacteristic(RadioBluetooth.FromRadioUuid), 8000, "The radio did not answer.");
-    const fromNum = await withTimeout(service.getCharacteristic(RadioBluetooth.FromNumUuid), 8000, "The radio did not answer.");
+    const service = await server.getPrimaryService(RadioBluetooth.ServiceUuid);
+    const toRadio = await service.getCharacteristic(RadioBluetooth.ToRadioUuid);
+    const fromRadio = await service.getCharacteristic(RadioBluetooth.FromRadioUuid);
+    const fromNum = await service.getCharacteristic(RadioBluetooth.FromNumUuid);
     return new RadioBluetooth(toRadio, fromRadio, fromNum, server);
   }
 
@@ -99,7 +74,7 @@ export class RadioBluetooth {
         this.emitStatus(Status.DeviceConnecting);
         this.gattServer.device.addEventListener("gattserverdisconnected", this.onGattDisconnected);
         try {
-          await withTimeout(this.fromNumCharacteristic.startNotifications(), 8000, "The radio did not start sending.");
+          await this.fromNumCharacteristic.startNotifications();
           this.fromNumCharacteristic.addEventListener("characteristicvaluechanged", this.onFromNumChanged);
           this.emitStatus(Status.DeviceConnected);
           void this.readFromRadio();
@@ -119,13 +94,13 @@ export class RadioBluetooth {
     this.toDevice = new WritableStream({
       write: async (chunk) => {
         try {
-          await this.runTurn(async () => {
-            await withTimeout(this.toRadioCharacteristic.writeValue(toArrayBuffer(chunk)), 8000, "The radio did not accept a packet.");
-          });
+          await this.runTurn(() => this.writeRadio(chunk));
           this.needsRead = true;
           void this.readFromRadio();
         } catch (error) {
-          if (!this.closingByUser) {
+          // A failed write is not a reason to disconnect. Android drops the
+          // next connect for minutes if we close the link while a call is still running.
+          if (!this.gattServer.connected && !this.closingByUser) {
             this.noteDrop("write-error");
             this.dead = true;
             this.emitStatus(Status.DeviceDisconnected, "write-error");
@@ -196,13 +171,17 @@ export class RadioBluetooth {
           if (!more && !this.needsRead) return;
         } catch (error) {
           if (this.closingByUser || this.dead) return;
-          if (gattBusy(error) && this.busyRetries < 4) {
+          // The phone allows one Bluetooth call at a time. Wait and read again.
+          // Closing the link here is what makes the next connect sit for minutes.
+          if (this.gattServer.connected) {
             this.busyRetries += 1;
-            await wait(50);
+            await wait(Math.min(1000, gattBusy(error) ? 80 : 200 * this.busyRetries));
             this.needsRead = true;
             continue;
           }
-          this.fail(error instanceof Error && error.message ? error.message : "read-error");
+          this.noteDrop(error instanceof Error && error.message ? error.message : "read-error");
+          this.dead = true;
+          this.emitStatus(Status.DeviceDisconnected, this.dropReason);
           return;
         }
       }
@@ -214,29 +193,24 @@ export class RadioBluetooth {
 
   /** Read one queued packet, then let a waiting write take a turn. */
   private async pull(): Promise<boolean> {
-    const value = await this.runTurn(() =>
-      withTimeout(this.fromRadioCharacteristic.readValue(), 8000, "The radio stopped answering."),
-    );
+    const value = await this.runTurn(() => this.fromRadioCharacteristic.readValue());
     if (value.byteLength === 0) return false;
     this.enqueue({ type: "packet", data: copyView(value) });
-    if (ANDROID) await wait(8);
+    await wait(0);
     return true;
+  }
+
+  private async writeRadio(chunk: Uint8Array): Promise<void> {
+    const bytes = toArrayBuffer(chunk);
+    if (this.toRadioCharacteristic.properties.writeWithoutResponse) {
+      await this.toRadioCharacteristic.writeValueWithoutResponse(bytes);
+      return;
+    }
+    await this.toRadioCharacteristic.writeValue(bytes);
   }
 
   private noteDrop(reason: string): void {
     if (!this.dropReason) this.dropReason = reason;
-  }
-
-  private fail(reason: string): void {
-    if (this.dead) return;
-    this.noteDrop(reason);
-    this.dead = true;
-    this.emitStatus(Status.DeviceDisconnected, reason);
-    try {
-      this.gattServer.disconnect();
-    } catch {
-      /* Already closed. */
-    }
   }
 
   private emitStatus(next: Types.DeviceStatusEnum, reason?: string): void {

@@ -67,8 +67,6 @@ export class RadioSession {
   private userPaused = false;
   private attempt = 0;
   private retryTimer = 0;
-  private tick = 0;
-  private keepAlive = 0;
   private link: RadioBluetooth | null = null;
   private tries = 0;
   private pickerPending = false;
@@ -84,7 +82,6 @@ export class RadioSession {
     this.userPaused = false;
     this.tries = 0;
     window.clearTimeout(this.retryTimer);
-    window.clearInterval(this.tick);
     // requestDevice has to be the first await in this click. A saved radio that
     // this page cannot reopen used to take that path through getDevices and the
     // chooser never appeared.
@@ -131,7 +128,6 @@ export class RadioSession {
     this.userPaused = true;
     this.attempt += 1;
     window.clearTimeout(this.retryTimer);
-    window.clearInterval(this.tick);
     const device = this.device;
     this.drop();
     this.hooks.onStatus("disconnected", "Not connected");
@@ -179,39 +175,15 @@ export class RadioSession {
     this.connecting = true;
     this.userPaused = false;
     const name = device.name || readSavedRadio()?.name || "the radio";
-    const started = Date.now();
-    let action = this.tries > 0 ? "Resetting Bluetooth" : `Opening ${name}`;
-    const paint = () => {
-      if (attempt !== this.attempt) return;
-      const seconds = Math.max(1, Math.round((Date.now() - started) / 1000));
-      this.step("connecting", seconds <= 1 ? action : `${action}, ${seconds}s`);
-    };
-    paint();
-    window.clearInterval(this.tick);
-    this.tick = window.setInterval(paint, 1000);
+    this.step("connecting", `Opening ${name}`);
     try {
-      if (this.tries > 0 || device.gatt?.connected) {
-        try {
-          device.gatt?.disconnect();
-        } catch {
-          /* The phone may already have dropped the radio. */
-        }
-        await wait(600);
-        if (attempt !== this.attempt || this.userPaused) return;
-      }
-      action = `Opening ${name}`;
-      paint();
-      const link = await promiseTimeout(
-        RadioBluetooth.createFromDevice(device),
-        8000,
-        "The radio did not answer.",
-      );
+      // Do not disconnect() before connect(). On Android that call, while a
+      // previous Bluetooth request is still open, makes the next connect wait minutes.
+      const link = await RadioBluetooth.createFromDevice(device);
       if (attempt !== this.attempt || this.userPaused) {
         void link.disconnect();
         return;
       }
-      window.clearInterval(this.tick);
-      this.tick = 0;
       this.link = link;
       const mesh = new MeshDevice(asMeshTransport(link));
       this.device = mesh;
@@ -223,20 +195,11 @@ export class RadioSession {
         this.hooks.onBanner("error", error instanceof Error ? error.message : "The radio did not finish starting.");
       });
     } catch (error) {
-      try {
-        device.gatt?.disconnect();
-      } catch {
-        /* The phone may already have dropped the radio. */
-      }
       if (attempt !== this.attempt || this.userPaused) return;
       this.device = null;
       this.scheduleRetry(bleMessage(error), attempt);
     } finally {
-      if (attempt === this.attempt) {
-        window.clearInterval(this.tick);
-        this.tick = 0;
-        this.connecting = false;
-      }
+      if (attempt === this.attempt) this.connecting = false;
     }
   }
 
@@ -251,10 +214,11 @@ export class RadioSession {
       return;
     }
     this.hooks.onStatus("connecting", `Attempt ${this.tries} of 3 failed. ${problem.why}`, problem.fix);
+    // Android needs the old Bluetooth session to finish closing before connect() works again.
     this.retryTimer = window.setTimeout(() => {
       if (this.userPaused || attempt !== this.attempt || this.connecting || this.restoring) return;
       void this.restore();
-    }, 700);
+    }, 3000);
   }
 
   private step(status: ConnectionStatus, action: string, note?: string): void {
@@ -424,21 +388,7 @@ export class RadioSession {
     await this.open(ble);
   }
 
-  private armKeepAlive(): void {
-    window.clearInterval(this.keepAlive);
-    const ping = () => {
-      if (!this.device) return;
-      void this.device.heartbeat().catch(() => {
-        /* A failed ping shows up as a disconnect and reconnects. */
-      });
-    };
-    window.setTimeout(ping, 4000);
-    this.keepAlive = window.setInterval(ping, 20000);
-  }
-
   private drop(): void {
-    window.clearInterval(this.keepAlive);
-    this.keepAlive = 0;
     for (const unsubscribe of this.unsubs) unsubscribe();
     this.unsubs = [];
     this.device = null;
@@ -453,7 +403,6 @@ export class RadioSession {
     }
     if (status === 7) {
       this.tries = 0;
-      this.armKeepAlive();
       this.hooks.onStatus("connected", "Radio live", "");
       return;
     }
@@ -871,10 +820,6 @@ function readSavedRadio(): { id: string; name: string } | null {
   } catch {
     return null;
   }
-}
-
-function wait(ms: number): Promise<void> {
-  return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
 
 function promiseTimeout<T>(work: Promise<T>, ms: number, label: string): Promise<T> {

@@ -301,7 +301,7 @@ export function MeshProvider({ children }: { children: ReactNode }) {
       } catch {
         askedFix.current = false;
       }
-    }, 2000);
+    }, 8000);
     return () => window.clearTimeout(timer);
   }, [state.status, state.myNodeNum]);
 
