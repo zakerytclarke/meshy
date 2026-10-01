@@ -44,10 +44,10 @@ export class RadioBluetooth {
   private fromDeviceController?: ReadableStreamDefaultController<Types.DeviceOutput>;
   private lastStatus = Status.DeviceDisconnected;
   private closingByUser = false;
-  private reading = false;
-  /** Packets the radio has announced. We never read past this, because an extra empty read hangs Android. */
-  private pendingReads = 0;
+  /** Last FromNum we have already caught up with. An extra FromRadio read blocks the radio for ~20s. */
   private lastFromNum: number | null = null;
+  private pumping = false;
+  private wakePump: (() => void) | null = null;
   private dead = false;
   private busyRetries = 0;
   /** Why the link closed, when this side noticed it. */
@@ -76,9 +76,10 @@ export class RadioBluetooth {
         this.emitStatus(Status.DeviceConnecting);
         this.gattServer.device.addEventListener("gattserverdisconnected", this.onGattDisconnected);
         try {
-          await this.fromNumCharacteristic.startNotifications();
           this.fromNumCharacteristic.addEventListener("characteristicvaluechanged", this.onFromNumChanged);
+          await this.fromNumCharacteristic.startNotifications();
           this.emitStatus(Status.DeviceConnected);
+          void this.pump();
         } catch {
           this.noteDrop("notify-failed");
           this.dead = true;
@@ -96,6 +97,7 @@ export class RadioBluetooth {
       write: async (chunk) => {
         try {
           await this.runTurn(() => this.writeRadio(chunk));
+          this.wakePump?.();
         } catch (error) {
           // A failed write is not a reason to disconnect. Android drops the
           // next connect for minutes if we close the link while a call is still running.
@@ -144,19 +146,8 @@ export class RadioBluetooth {
     this.emitStatus(Status.DeviceDisconnected, "gatt-disconnected");
   };
 
-  private onFromNumChanged = (event: Event): void => {
-    const view = (event.target as BluetoothRemoteGATTCharacteristic | null)?.value;
-    let count = 1;
-    if (view && view.byteLength >= 4) {
-      const num = view.getUint32(0, true);
-      if (this.lastFromNum !== null) {
-        const gap = (num - this.lastFromNum) >>> 0;
-        count = gap === 0 ? 1 : Math.min(gap, 500);
-      }
-      this.lastFromNum = num;
-    }
-    this.pendingReads += count;
-    void this.readFromRadio();
+  private onFromNumChanged = (): void => {
+    this.wakePump?.();
   };
 
   private runTurn<T>(op: () => Promise<T>): Promise<T> {
@@ -168,37 +159,81 @@ export class RadioBluetooth {
     return run;
   }
 
-  private async readFromRadio(): Promise<void> {
-    if (this.reading || this.closingByUser || this.dead || this.pendingReads <= 0) return;
-    this.reading = true;
+  /**
+   * FromNum is a counter, not a queue length. The radio only keeps 3 unread
+   * packets, and reading when none are waiting blocks that radio for ~20s,
+   * which also blocks the next send. Read only the new count, and never past it.
+   */
+  private async pump(): Promise<void> {
+    if (this.pumping || this.closingByUser || this.dead) return;
+    this.pumping = true;
     try {
-      while (!this.closingByUser && !this.dead && this.pendingReads > 0) {
-        this.pendingReads -= 1;
+      while (!this.closingByUser && !this.dead && this.gattServer.connected) {
+        let num: number;
         try {
-          const more = await this.pull();
+          const view = await this.runTurn(() => this.fromNumCharacteristic.readValue());
           this.busyRetries = 0;
-          if (!more) {
-            this.pendingReads = 0;
-            return;
-          }
+          num = view.byteLength >= 4 ? view.getUint32(0, true) : (this.lastFromNum ?? 0);
         } catch (error) {
           if (this.closingByUser || this.dead) return;
-          if (this.gattServer.connected) {
-            this.pendingReads += 1;
-            this.busyRetries += 1;
-            await wait(Math.min(1000, gattBusy(error) ? 80 : 200 * this.busyRetries));
-            continue;
+          if (!this.gattServer.connected) {
+            this.noteDrop("read-error");
+            this.dead = true;
+            this.emitStatus(Status.DeviceDisconnected, this.dropReason);
+            return;
           }
-          this.noteDrop(error instanceof Error && error.message ? error.message : "read-error");
-          this.dead = true;
-          this.emitStatus(Status.DeviceDisconnected, this.dropReason);
-          return;
+          this.busyRetries += 1;
+          await this.pause(Math.min(1000, gattBusy(error) ? 80 : 200 * this.busyRetries));
+          continue;
+        }
+        if (this.lastFromNum === null) {
+          this.lastFromNum = num;
+          await this.pause(120);
+          continue;
+        }
+        const gap = (num - this.lastFromNum) >>> 0;
+        if (gap === 0) {
+          await this.pause(120);
+          continue;
+        }
+        const reads = Math.min(gap, 3);
+        this.lastFromNum = num;
+        for (let index = 0; index < reads && !this.closingByUser && !this.dead; index += 1) {
+          try {
+            const more = await this.pull();
+            this.busyRetries = 0;
+            if (!more) break;
+          } catch (error) {
+            if (this.closingByUser || this.dead) return;
+            if (this.gattServer.connected) {
+              this.busyRetries += 1;
+              await this.pause(Math.min(1000, gattBusy(error) ? 80 : 200 * this.busyRetries));
+              break;
+            }
+            this.noteDrop(error instanceof Error && error.message ? error.message : "read-error");
+            this.dead = true;
+            this.emitStatus(Status.DeviceDisconnected, this.dropReason);
+            return;
+          }
         }
       }
     } finally {
-      this.reading = false;
-      if (this.pendingReads > 0 && !this.closingByUser && !this.dead) void this.readFromRadio();
+      this.pumping = false;
     }
+  }
+
+  private pause(ms: number): Promise<void> {
+    return new Promise((resolve) => {
+      const timer = window.setTimeout(() => {
+        this.wakePump = null;
+        resolve();
+      }, ms);
+      this.wakePump = () => {
+        window.clearTimeout(timer);
+        this.wakePump = null;
+        resolve();
+      };
+    });
   }
 
   /** Read one queued packet, then let a waiting write take a turn. */

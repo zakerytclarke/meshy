@@ -461,12 +461,15 @@ export class RadioSession {
   }
 
   private onText(packet: Meta<string>): void {
-    const mine = packet.from === this.hooks.getMyNum();
+    const myNum = this.hooks.getMyNum();
+    // The library echoes a send before the radio has told us our node number, so from is 0.
+    const from = packet.from === 0 && myNum ? myNum : packet.from;
+    const mine = myNum !== 0 ? from === myNum : packet.from === 0;
     const rf = this.lastMesh && this.lastMesh.id === packet.id ? readRf(this.lastMesh) : { hops: null };
     this.hooks.onMessage({
       id: crypto.randomUUID(),
       packetId: packet.id,
-      from: packet.from,
+      from,
       to: packet.to,
       channel: packet.channel,
       direct: packet.type === "direct",

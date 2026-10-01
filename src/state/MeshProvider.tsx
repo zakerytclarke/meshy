@@ -479,6 +479,7 @@ export function MeshProvider({ children }: { children: ReactNode }) {
 
 function inOpenChat(message: ChatMessage, chat: ChatRef, myNum: number): boolean {
   if (chat.kind === "channel") return !message.direct && message.channel === chat.id;
+  if (message.outgoing && message.direct && message.to === chat.id) return true;
   return message.direct && ((message.from === chat.id && message.to === myNum) || (message.from === myNum && message.to === chat.id));
 }
 
