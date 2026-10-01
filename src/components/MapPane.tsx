@@ -485,10 +485,10 @@ function cellBlock(cell: SignalCell): { x: number; y: number } | null {
   return blockIndex((edges.south + edges.north) / 2, (edges.west + edges.east) / 2);
 }
 
-const LINK_WINDOW_MS = 5 * 60 * 1000;
+const LINK_WINDOW_MS = 60 * 60 * 1000;
 
 function recentLinks(
-  messages: { direct: boolean; time: number; from: number; to: number }[],
+  messages: { time: number; from: number; to: number }[],
   nodes: NodeRecord[],
   myNodeNum: number,
   here: { lat: number; lng: number } | null,
@@ -496,7 +496,7 @@ function recentLinks(
   const now = Date.now();
   const latest = new Map<string, { from: number; to: number }>();
   for (const message of messages) {
-    if (!message.direct || now - message.time > LINK_WINDOW_MS) continue;
+    if (now - message.time > LINK_WINDOW_MS) continue;
     if (message.from === message.to || message.to === BROADCAST_NUM || message.from === BROADCAST_NUM) continue;
     latest.set(`${message.from}>${message.to}`, { from: message.from, to: message.to });
   }
