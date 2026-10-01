@@ -69,6 +69,7 @@ export class RadioSession {
   private retryTimer = 0;
   private link: RadioBluetooth | null = null;
   private tries = 0;
+  private loadedNodes = 0;
   private pickerPending = false;
   private handledFailures = new Set<number>();
 
@@ -174,6 +175,7 @@ export class RadioSession {
     window.clearTimeout(this.retryTimer);
     this.connecting = true;
     this.userPaused = false;
+    this.loadedNodes = 0;
     const name = device.name || readSavedRadio()?.name || "the radio";
     const android = /Android/i.test(navigator.userAgent);
     this.step(
@@ -207,8 +209,8 @@ export class RadioSession {
       this.bind(mesh);
       this.step("configuring", "Loading nodes and channels");
       void mesh.configure().catch((error: unknown) => {
-        if (this.device !== mesh) return;
-        this.hooks.onBanner("error", error instanceof Error ? error.message : "The radio did not finish starting.");
+        if (this.device !== mesh || attempt !== this.attempt) return;
+        this.scheduleRetry(error instanceof Error ? error.message : "The radio did not send its node list.", attempt);
       });
     } catch (error) {
       if (attempt !== this.attempt || this.userPaused) return;
@@ -415,7 +417,7 @@ export class RadioSession {
 
   private onStatus(status: number): void {
     if (status === 6 || status === 5) {
-      this.step("configuring", "Loading nodes and channels");
+      if (this.loadedNodes === 0) this.step("configuring", "Loading nodes and channels");
       return;
     }
     if (status === 7) {
@@ -482,6 +484,10 @@ export class RadioSession {
   }
 
   private onNodeInfo(info: Protobuf.Mesh.NodeInfo): void {
+    this.loadedNodes += 1;
+    if (this.loadedNodes === 1 || this.loadedNodes % 25 === 0) {
+      this.step("configuring", `Loading nodes and channels (${this.loadedNodes})`);
+    }
     const user = info.user;
     this.hooks.onNode({
       num: info.num,

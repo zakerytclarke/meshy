@@ -46,6 +46,8 @@ export class RadioBluetooth {
   private closingByUser = false;
   private reading = false;
   private needsRead = false;
+  /** Reads wait until the first write, so Android is not blocked on an empty read. */
+  private writableSent = false;
   private dead = false;
   private busyRetries = 0;
   /** Why the link closed, when this side noticed it. */
@@ -77,7 +79,6 @@ export class RadioBluetooth {
           await this.fromNumCharacteristic.startNotifications();
           this.fromNumCharacteristic.addEventListener("characteristicvaluechanged", this.onFromNumChanged);
           this.emitStatus(Status.DeviceConnected);
-          void this.readFromRadio();
         } catch {
           this.noteDrop("notify-failed");
           this.dead = true;
@@ -95,6 +96,7 @@ export class RadioBluetooth {
       write: async (chunk) => {
         try {
           await this.runTurn(() => this.writeRadio(chunk));
+          this.writableSent = true;
           this.needsRead = true;
           void this.readFromRadio();
         } catch (error) {
@@ -160,7 +162,7 @@ export class RadioBluetooth {
   }
 
   private async readFromRadio(): Promise<void> {
-    if (this.reading || this.closingByUser || this.dead) return;
+    if (!this.writableSent || this.reading || this.closingByUser || this.dead) return;
     this.reading = true;
     try {
       while (!this.closingByUser && !this.dead) {
