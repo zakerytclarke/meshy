@@ -207,7 +207,7 @@ export class RadioSession {
       this.device = mesh;
       this.ble = device;
       this.bind(mesh);
-      this.step("configuring", "Loading nodes and channels");
+      this.hooks.onStatus("connected", "Radio live", "Saved nodes are still coming in.");
       void mesh.configure().catch((error: unknown) => {
         if (this.device !== mesh || attempt !== this.attempt) return;
         this.scheduleRetry(error instanceof Error ? error.message : "The radio did not send its node list.", attempt);
@@ -416,13 +416,10 @@ export class RadioSession {
   }
 
   private onStatus(status: number): void {
-    if (status === 6 || status === 5) {
-      if (this.loadedNodes === 0) this.step("configuring", "Loading nodes and channels");
-      return;
-    }
-    if (status === 7) {
+    if (status === 6 || status === 5 || status === 7) {
       this.tries = 0;
-      this.hooks.onStatus("connected", "Radio live", "");
+      const note = status === 7 ? "" : "Saved nodes are still coming in.";
+      this.hooks.onStatus("connected", "Radio live", this.loadedNodes > 0 && status !== 7 ? `Loaded ${this.loadedNodes} nodes.` : note);
       return;
     }
     if (status === 4 || status === 3) {
@@ -486,7 +483,7 @@ export class RadioSession {
   private onNodeInfo(info: Protobuf.Mesh.NodeInfo): void {
     this.loadedNodes += 1;
     if (this.loadedNodes === 1 || this.loadedNodes % 25 === 0) {
-      this.step("configuring", `Loading nodes and channels (${this.loadedNodes})`);
+      this.hooks.onStatus("connected", "Radio live", `Loaded ${this.loadedNodes} nodes.`);
     }
     const user = info.user;
     this.hooks.onNode({

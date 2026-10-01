@@ -45,9 +45,9 @@ export class RadioBluetooth {
   private lastStatus = Status.DeviceDisconnected;
   private closingByUser = false;
   private reading = false;
-  private needsRead = false;
-  /** Reads wait until the first write, so Android is not blocked on an empty read. */
-  private writableSent = false;
+  /** Packets the radio has announced. We never read past this, because an extra empty read hangs Android. */
+  private pendingReads = 0;
+  private lastFromNum: number | null = null;
   private dead = false;
   private busyRetries = 0;
   /** Why the link closed, when this side noticed it. */
@@ -96,9 +96,6 @@ export class RadioBluetooth {
       write: async (chunk) => {
         try {
           await this.runTurn(() => this.writeRadio(chunk));
-          this.writableSent = true;
-          this.needsRead = true;
-          void this.readFromRadio();
         } catch (error) {
           // A failed write is not a reason to disconnect. Android drops the
           // next connect for minutes if we close the link while a call is still running.
@@ -147,8 +144,18 @@ export class RadioBluetooth {
     this.emitStatus(Status.DeviceDisconnected, "gatt-disconnected");
   };
 
-  private onFromNumChanged = (): void => {
-    this.needsRead = true;
+  private onFromNumChanged = (event: Event): void => {
+    const view = (event.target as BluetoothRemoteGATTCharacteristic | null)?.value;
+    let count = 1;
+    if (view && view.byteLength >= 4) {
+      const num = view.getUint32(0, true);
+      if (this.lastFromNum !== null) {
+        const gap = (num - this.lastFromNum) >>> 0;
+        count = gap === 0 ? 1 : Math.min(gap, 500);
+      }
+      this.lastFromNum = num;
+    }
+    this.pendingReads += count;
     void this.readFromRadio();
   };
 
@@ -162,23 +169,24 @@ export class RadioBluetooth {
   }
 
   private async readFromRadio(): Promise<void> {
-    if (!this.writableSent || this.reading || this.closingByUser || this.dead) return;
+    if (this.reading || this.closingByUser || this.dead || this.pendingReads <= 0) return;
     this.reading = true;
     try {
-      while (!this.closingByUser && !this.dead) {
-        this.needsRead = false;
+      while (!this.closingByUser && !this.dead && this.pendingReads > 0) {
+        this.pendingReads -= 1;
         try {
           const more = await this.pull();
           this.busyRetries = 0;
-          if (!more && !this.needsRead) return;
+          if (!more) {
+            this.pendingReads = 0;
+            return;
+          }
         } catch (error) {
           if (this.closingByUser || this.dead) return;
-          // The phone allows one Bluetooth call at a time. Wait and read again.
-          // Closing the link here is what makes the next connect sit for minutes.
           if (this.gattServer.connected) {
+            this.pendingReads += 1;
             this.busyRetries += 1;
             await wait(Math.min(1000, gattBusy(error) ? 80 : 200 * this.busyRetries));
-            this.needsRead = true;
             continue;
           }
           this.noteDrop(error instanceof Error && error.message ? error.message : "read-error");
@@ -189,7 +197,7 @@ export class RadioBluetooth {
       }
     } finally {
       this.reading = false;
-      if (this.needsRead && !this.closingByUser && !this.dead) void this.readFromRadio();
+      if (this.pendingReads > 0 && !this.closingByUser && !this.dead) void this.readFromRadio();
     }
   }
 
